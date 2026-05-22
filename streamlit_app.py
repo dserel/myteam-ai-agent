@@ -20,7 +20,6 @@ from datetime import date
 import streamlit as st
 
 from src.auth import login_gate, logout_button
-from src.charts import render as render_chart
 from src.llm import LLMClient
 from src.metabase import MetabaseClient, MetabaseError
 from src.storage import StorageClient
@@ -239,9 +238,6 @@ def _render_feedback(msg_idx: int, history_id: str | None) -> None:
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
         st.markdown(msg["content"])
-        # Chart (πάνω από rows)
-        if msg.get("chart_spec") and msg.get("rows"):
-            render_chart(msg["chart_spec"], msg["rows"])
         if msg.get("sql"):
             with st.expander("🔎 Generated SQL"):
                 st.code(msg["sql"], language="sql")
@@ -282,7 +278,6 @@ if prompt:
             "error": None,
             "history_id": None,
             "feedback": None,
-            "chart_spec": None,
         }
         t0 = time.time()
         rejected_reason: str | None = None
@@ -292,47 +287,25 @@ if prompt:
         rows: list[dict] | None = None
         answer: str = ""
 
-        # Πιπε για retry-on-error
-        MAX_ATTEMPTS = 3  # 1 initial + 2 self-heal retries
-        previous_attempts: list[str] = []  # για να μη ξαναδοκιμάσει ίδιο SQL
+        # 1. SQL generation
+        try:
+            placeholder.markdown("🧠 _Παράγω SQL…_")
+            gen = llm_client.generate_sql(prompt, ctx)
+        except Exception as e:
+            err = str(e)
+            answer = f"❌ SQL generation failed: {e}"
+            placeholder.markdown(answer)
 
-        for attempt in range(MAX_ATTEMPTS):
-            # Reset per-attempt vars
-            err = None
-            rejected_reason = None
-            validated_sql = None
-
-            # 1. SQL generation (first attempt) ή 1b. fix-after-error (subsequent)
-            try:
-                if attempt == 0:
-                    placeholder.markdown("🧠 _Παράγω SQL…_")
-                    gen = llm_client.generate_sql(prompt, ctx)
-                else:
-                    placeholder.markdown(f"🔧 _Διορθώνω SQL (προσπάθεια {attempt + 1}/{MAX_ATTEMPTS})…_")
-                    gen = llm_client.fix_sql_after_error(
-                        question=prompt,
-                        failed_sql=previous_attempts[-1].split("\nERROR:\n", 1)[0] if previous_attempts else (raw_sql or ""),
-                        error=previous_attempts[-1].split("\nERROR:\n", 1)[1] if previous_attempts and "\nERROR:\n" in previous_attempts[-1] else "(unknown)",
-                        context=ctx,
-                        previous_attempts=previous_attempts,
-                    )
-            except Exception as e:
-                err = f"sql gen: {e}"
-                answer = f"❌ SQL generation failed: {e}"
-                break
-
+        if not err:
             if "error" in gen:
                 rejected_reason = "model_refused"
                 answer = f"⚠️ {gen['error']}"
-                break
+                placeholder.markdown(answer)
+            else:
+                raw_sql = (gen.get("sql") or "").strip()
 
-            raw_sql = (gen.get("sql") or "").strip()
-            if not raw_sql:
-                answer = "Δεν επέστρεψε SQL το μοντέλο."
-                err = "empty_sql"
-                break
-
-            # 2. Validation
+        # 2. Validation
+        if raw_sql and not err:
             try:
                 placeholder.markdown("🛡️ _Έλεγχος ασφαλείας…_")
                 v = validate_and_normalize(
@@ -343,63 +316,34 @@ if prompt:
                 )
                 validated_sql = v.sql
             except ValidationError as e:
-                # Retry-able: dump στο prompt το error και ζητάμε διόρθωση
-                previous_attempts.append(f"{raw_sql}\nERROR:\nValidator rejected: {e}")
-                if attempt < MAX_ATTEMPTS - 1:
-                    continue
                 rejected_reason = f"validator: {e}"
                 answer = (
-                    f"🚫 Μετά από {MAX_ATTEMPTS} προσπάθειες, το SQL δεν πέρασε τους ελέγχους ασφαλείας:\n\n"
+                    f"🚫 Το παραγόμενο SQL δεν πέρασε τους ελέγχους ασφαλείας:\n\n"
                     f"`{e}`\n\nΔοκίμασε να αναδιατυπώσεις την ερώτηση πιο συγκεκριμένα."
                 )
-                break
+                placeholder.markdown(answer)
 
-            # 3. Execution
+        # 3. Execution
+        if validated_sql and not err and not rejected_reason:
             try:
-                placeholder.markdown(
-                    f"📡 _Τρέχω query στο Metabase{'' if attempt == 0 else ' (retry)'}…_"
-                )
+                placeholder.markdown("📡 _Τρέχω query στο Metabase…_")
                 rows = mb_client.run_sql(validated_sql)
             except MetabaseError as e:
-                # Συνήθως schema mismatch — δίνουμε στο LLM ευκαιρία να διορθώσει
-                err_text = str(e)
-                # Συμμάζεμα: το error του Metabase είναι JSON dump — κράτα μόνο
-                # το "error" field αν υπάρχει για να μη φορτώνουμε context.
-                import re as _re
-                m = _re.search(r'"error":"([^"]+)"', err_text)
-                short_err = m.group(1) if m else err_text[:300]
-                previous_attempts.append(f"{validated_sql}\nERROR:\n{short_err}")
+                err = f"metabase: {e}"
+                answer = f"💥 Metabase error: {e}"
+                placeholder.markdown(answer)
 
-                if attempt < MAX_ATTEMPTS - 1:
-                    placeholder.markdown(
-                        f"⚠️ Metabase error (`{short_err[:80]}…`) — δοκιμάζω αυτο-διόρθωση…"
-                    )
-                    continue
-                err = f"metabase: {short_err}"
-                answer = f"💥 Metabase error μετά από {MAX_ATTEMPTS} προσπάθειες: {short_err}"
-                break
-
-            # Έφτασε εδώ → όλα πέρασαν, βγαίνουμε από το loop
-            break
-
-        # 4. Answer (μόνο αν είχαμε επιτυχία)
-        chart_spec: dict | None = None
-        if rows is not None and not err and not rejected_reason:
+        # 4. Answer
+        if rows is not None and not err:
             try:
                 placeholder.markdown("✍️ _Συντάσσω απάντηση…_")
-                aw = llm_client.write_answer(prompt, validated_sql, rows)
-                answer = aw.get("text", "")
-                chart_spec = aw.get("chart")
+                answer = llm_client.write_answer(prompt, validated_sql, rows)
             except Exception as e:
                 answer = f"Βρήκα **{len(rows)}** γραμμές αλλά απέτυχε η σύνταξη της απάντησης ({e})."
 
         elapsed_ms = int((time.time() - t0) * 1000)
         placeholder.markdown(answer)
-        # Chart (αν υπάρχει spec)
-        if chart_spec and rows:
-            render_chart(chart_spec, rows)
-        retry_note = f" · {len(previous_attempts)} retry(ies)" if previous_attempts else ""
-        st.caption(f"⏱ {elapsed_ms} ms · {len(rows) if rows else 0} rows{retry_note}")
+        st.caption(f"⏱ {elapsed_ms} ms · {len(rows) if rows else 0} rows")
 
         # Persist to Supabase (best-effort)
         history_id = None
@@ -435,7 +379,6 @@ if prompt:
         msg_payload["rows"] = rows
         msg_payload["error"] = err
         msg_payload["history_id"] = history_id
-        msg_payload["chart_spec"] = chart_spec
         st.session_state.messages.append(msg_payload)
 
         # Render feedback for this new message

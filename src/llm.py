@@ -95,56 +95,7 @@ class LLMClient:
         )
         return _extract_json(resp.text or "{}")
 
-    def fix_sql_after_error(
-        self,
-        question: str,
-        failed_sql: str,
-        error: str,
-        context: dict,
-        previous_attempts: list[str] | None = None,
-    ) -> dict:
-        """
-        Στέλνει στο LLM το failed SQL + το error message και ζητάει
-        διόρθωση. Χρησιμοποιεί το ίδιο system prompt (sql_generator.md)
-        αλλά το user message περιέχει το context της αποτυχίας.
-        """
-        system = _render_sql_prompt(context)
-        attempts_block = ""
-        if previous_attempts:
-            attempts_block = (
-                "\n\nΠΡΟΗΓΟΥΜΕΝΕΣ ΑΠΟΠΕΙΡΕΣ ΠΟΥ ΑΠΕΤΥΧΑΝ (μην τις επαναλάβεις):\n"
-                + "\n---\n".join(previous_attempts)
-            )
-
-        user_msg = (
-            f"Η αρχική ερώτηση του χρήστη ήταν:\n\n"
-            f"  «{question}»\n\n"
-            f"Παρήγαγες το παρακάτω SQL:\n\n```sql\n{failed_sql}\n```\n\n"
-            f"Όμως η εκτέλεση απέτυχε με αυτό το error:\n\n"
-            f"  {error}\n\n"
-            f"Διόρθωσέ το. Αν το error δείχνει ότι κάποια στήλη/πίνακας δεν υπάρχει, "
-            f"ξανασκέψου τη δομή — μπορεί να έκανες υπόθεση που δεν ισχύει. "
-            f"Πιθανή στρατηγική: χρησιμοποίησε εναλλακτικές στήλες (π.χ. `type` αντί για `name` "
-            f"για lookup tables), ή κάνε JOIN με διαφορετικό τρόπο. "
-            f"Επέστρεψε ΜΟΝΟ JSON με νέο διορθωμένο SQL."
-            f"{attempts_block}"
-        )
-        resp = self._client.models.generate_content(
-            model=self.model,
-            contents=[types.Content(role="user", parts=[types.Part(text=user_msg)])],
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=self.sql_temperature,
-                response_mime_type="application/json",
-            ),
-        )
-        return _extract_json(resp.text or "{}")
-
-    def write_answer(self, question: str, sql: str, rows: list[dict]) -> dict:
-        """
-        Returns dict: {"text": str, "chart": dict|None}
-        Όπου chart spec έχει: {type, title, x, y, color, agg, value_format}
-        """
+    def write_answer(self, question: str, sql: str, rows: list[dict]) -> str:
         system = ANSWER_PROMPT_PATH.read_text(encoding="utf-8")
         user_msg = (
             f"**Question**: {question}\n\n"
@@ -158,17 +109,9 @@ class LLMClient:
             config=types.GenerateContentConfig(
                 system_instruction=system,
                 temperature=self.answer_temperature,
-                response_mime_type="application/json",
             ),
         )
-        raw = (resp.text or "").strip()
-        try:
-            out = _extract_json(raw)
-        except Exception:
-            # Fallback: αν δεν επιστρέψει valid JSON, treat όλο σαν text
-            return {"text": raw, "chart": None}
-        # Defensive: σιγουρέψου ότι έχει τα δύο keys
-        return {"text": out.get("text", "").strip(), "chart": out.get("chart")}
+        return (resp.text or "").strip()
 
 
 # ---------- Legacy module-level (env-driven) -------------------------------
