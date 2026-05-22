@@ -1,0 +1,8 @@
+.streamlit/secrets.toml
+SECRETS_TO_PASTE.toml
+__pycache__/
+*.pyc
+.venv/
+venv/
+.env
+.DS_Store

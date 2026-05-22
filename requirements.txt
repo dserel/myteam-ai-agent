@@ -1,0 +1,11 @@
+streamlit>=1.36
+fastapi>=0.115
+uvicorn[standard]>=0.30
+pydantic>=2.7
+requests>=2.32
+sqlparse>=0.5
+google-genai>=0.3
+pandas>=2.0
+plotly>=5.20
+supabase>=2.5
+bcrypt>=4.1
