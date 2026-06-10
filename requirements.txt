@@ -6,6 +6,7 @@ requests>=2.32
 sqlparse>=0.5
 anthropic>=0.40
 pandas>=2.0
+openpyxl>=3.1
 plotly>=5.20
 supabase>=2.5
 bcrypt>=4.1

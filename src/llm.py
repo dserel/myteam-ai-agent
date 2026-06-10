@@ -22,7 +22,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 from anthropic import Anthropic
 
@@ -68,6 +68,39 @@ def _extract_json(text: str) -> dict:
         if not m:
             raise ValueError(f"could not parse JSON from LLM output:\n{text[:500]}")
         return json.loads(m.group(0))
+
+
+def _partial_text_from_json(acc: str) -> str:
+    """
+    Εξάγει προοδευτικά την τιμή του πεδίου "text" από ένα JSON που γράφεται
+    ακόμη (streaming). Επιστρέφει ό,τι κείμενο έχει φτάσει μέχρι στιγμής,
+    κάνοντας unescape τα \n / \t / \". Tolerant — ποτέ δεν πετάει.
+    """
+    i = acc.find('"text"')
+    if i < 0:
+        return ""
+    j = acc.find(":", i)
+    if j < 0:
+        return ""
+    k = acc.find('"', j + 1)
+    if k < 0:
+        return ""
+    out: list[str] = []
+    esc = False
+    idx = k + 1
+    while idx < len(acc):
+        c = acc[idx]
+        if esc:
+            out.append({"n": "\n", "t": "\t", "r": "\r"}.get(c, c))
+            esc = False
+        elif c == "\\":
+            esc = True
+        elif c == '"':
+            break
+        else:
+            out.append(c)
+        idx += 1
+    return "".join(out)
 
 
 def _render_sql_prompt(context: dict) -> str:
@@ -239,8 +272,50 @@ class LLMClient:
                 out = _extract_json(raw)
             except Exception:
                 return {"text": raw, "chart": None}
-        # Defensive: σιγουρέψου ότι έχει τα δύο keys
-        return {"text": (out.get("text") or "").strip(), "chart": out.get("chart")}
+        # Defensive: σιγουρέψου ότι έχει τα keys
+        return {
+            "text": (out.get("text") or "").strip(),
+            "chart": out.get("chart"),
+            "followups": out.get("followups") or [],
+        }
+
+
+    def stream_answer(self, question: str, sql: str, rows: list[dict], out: dict) -> "Iterator[str]":
+        """
+        Streaming εκδοχή του write_answer. Κάνει yield το ΚΕΙΜΕΝΟ της απάντησης
+        προοδευτικά (για ζωντανή εμφάνιση), και στο τέλος γεμίζει το `out` dict με
+        {"text", "chart", "followups"}. Σε σφάλμα γεμίζει out["_error"] και σταματά —
+        ο caller κάνει fallback στο write_answer.
+        """
+        system = ANSWER_PROMPT_PATH.read_text(encoding="utf-8")
+        user_msg = (
+            f"**Question**: {question}\n\n"
+            f"**SQL**:\n```sql\n{sql}\n```\n\n"
+            f"**Rows ({len(rows)} total)**:\n```json\n"
+            f"{json.dumps(rows[:50], ensure_ascii=False, default=str)}\n```\n"
+        )
+        acc = ""
+        try:
+            with self._client.messages.stream(
+                model=self.model,
+                max_tokens=MAX_TOKENS,
+                temperature=self.answer_temperature,
+                system=system + _JSON_ONLY_SUFFIX,
+                messages=[{"role": "user", "content": user_msg}],
+            ) as stream:
+                for delta in stream.text_stream:
+                    acc += delta
+                    yield _partial_text_from_json(acc)
+        except Exception as e:
+            out["_error"] = str(e)
+            return
+        try:
+            parsed = _extract_json(acc)
+        except Exception:
+            parsed = {"text": _partial_text_from_json(acc) or acc, "chart": None}
+        out["text"] = (parsed.get("text") or "").strip()
+        out["chart"] = parsed.get("chart")
+        out["followups"] = parsed.get("followups") or []
 
 
 # ---------- Legacy module-level (env-driven) -------------------------------

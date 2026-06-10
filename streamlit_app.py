@@ -14,8 +14,11 @@ Phase A+B: live deployment με auth + Supabase storage για feedback loop.
 
 from __future__ import annotations
 
+import io
 import time
 from datetime import date
+
+import pandas as pd
 
 import streamlit as st
 
@@ -295,6 +298,44 @@ def _render_feedback(msg_idx: int, history_id: str | None) -> None:
                 st.rerun()
 
 
+def _render_rows_with_export(rows: list[dict], key_prefix: str) -> None:
+    """Πίνακας αποτελεσμάτων + κουμπιά λήψης CSV / Excel."""
+    df = pd.DataFrame(rows)
+    st.dataframe(df, use_container_width=True)
+    c1, c2 = st.columns(2)
+    csv = df.to_csv(index=False).encode("utf-8-sig")
+    c1.download_button(
+        "⬇️ CSV", csv, file_name="myteam_results.csv", mime="text/csv",
+        key=f"csv_{key_prefix}", use_container_width=True,
+    )
+    try:
+        buf = io.BytesIO()
+        with pd.ExcelWriter(buf, engine="openpyxl") as w:
+            df.to_excel(w, index=False, sheet_name="results")
+        c2.download_button(
+            "⬇️ Excel", buf.getvalue(), file_name="myteam_results.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            key=f"xlsx_{key_prefix}", use_container_width=True,
+        )
+    except Exception:
+        pass
+
+
+def _render_followups(followups: list, key_prefix: str) -> None:
+    """Clickable chips με προτεινόμενες επόμενες ερωτήσεις."""
+    if not followups:
+        return
+    st.caption("💬 Συνέχισε με:")
+    items = [f for f in followups[:3] if isinstance(f, str) and f.strip()]
+    if not items:
+        return
+    cols = st.columns(len(items))
+    for i, fq in enumerate(items):
+        if cols[i].button(fq, key=f"fu_{key_prefix}_{i}", use_container_width=True):
+            st.session_state["_pending_prompt"] = fq
+            st.rerun()
+
+
 # Render history
 for idx, msg in enumerate(st.session_state.messages):
     with st.chat_message(msg["role"]):
@@ -307,11 +348,12 @@ for idx, msg in enumerate(st.session_state.messages):
                 st.code(msg["sql"], language="sql")
         if msg.get("rows") is not None and msg["rows"]:
             with st.expander(f"📊 Rows ({len(msg['rows'])})"):
-                st.dataframe(msg["rows"], use_container_width=True)
+                _render_rows_with_export(msg["rows"], f"hist{idx}")
         if msg.get("error"):
             st.error(msg["error"])
         if msg["role"] == "assistant":
             _render_feedback(idx, msg.get("history_id"))
+            _render_followups(msg.get("followups") or [], f"hist{idx}")
 
 
 # ---------------------------------------------------------------------------
@@ -500,14 +542,26 @@ if prompt:
             # Έφτασε εδώ → όλα πέρασαν, βγαίνουμε από το loop
             break
 
-        # 4. Answer (μόνο αν είχαμε επιτυχία)
+        # 4. Answer (μόνο αν είχαμε επιτυχία) — streaming
         chart_spec: dict | None = None
+        followups: list = []
         if rows is not None and not err and not rejected_reason:
             try:
                 placeholder.markdown("✍️ _Συντάσσω απάντηση…_")
-                aw = llm_client.write_answer(effective_prompt, validated_sql, rows)
-                answer = aw.get("text", "")
-                chart_spec = aw.get("chart")
+                _out: dict = {}
+                for _partial in llm_client.stream_answer(effective_prompt, validated_sql, rows, _out):
+                    if _partial:
+                        placeholder.markdown(_partial + " ▌")
+                if "text" in _out:
+                    answer = _out.get("text", "")
+                    chart_spec = _out.get("chart")
+                    followups = _out.get("followups") or []
+                else:
+                    # streaming απέτυχε → fallback σε non-stream
+                    aw = llm_client.write_answer(effective_prompt, validated_sql, rows)
+                    answer = aw.get("text", "")
+                    chart_spec = aw.get("chart")
+                    followups = aw.get("followups") or []
             except Exception as e:
                 answer = f"Βρήκα **{len(rows)}** γραμμές αλλά απέτυχε η σύνταξη της απάντησης ({e})."
 
@@ -546,7 +600,7 @@ if prompt:
                 st.code(validated_sql or raw_sql, language="sql")
         if rows is not None and rows:
             with st.expander(f"📊 Rows ({len(rows)})"):
-                st.dataframe(rows, use_container_width=True)
+                _render_rows_with_export(rows, f"new{len(st.session_state.messages)}")
 
         msg_payload["content"] = answer
         msg_payload["sql"] = validated_sql or raw_sql
@@ -554,7 +608,9 @@ if prompt:
         msg_payload["error"] = err
         msg_payload["history_id"] = history_id
         msg_payload["chart_spec"] = chart_spec
+        msg_payload["followups"] = followups
         st.session_state.messages.append(msg_payload)
 
-        # Render feedback for this new message
+        # Render feedback + follow-up chips for this new message
         _render_feedback(len(st.session_state.messages) - 1, history_id)
+        _render_followups(followups, f"new{len(st.session_state.messages) - 1}")
