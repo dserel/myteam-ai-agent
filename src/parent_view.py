@@ -161,3 +161,32 @@ def milestones(profile_row: dict, today_month: int) -> list[str]:
     except Exception:
         pass
     return out
+
+
+def schedule_changes(mb: _Runner, club_id: int, parent_user_id: int, today: str, days_back: int = 14) -> list[dict]:
+    """Πρόσφατες ακυρώσεις/αλλαγές events των ομάδων του παιδιού (για proactive ειδοποίηση)."""
+    c = int(club_id)
+    kids = children_subquery(parent_user_id)
+    sql = f"""
+SELECT e.start_date, e.title, 'ακυρώθηκε' AS change_type, e.deleted_at AS changed_at
+FROM events e
+JOIN eventables ev ON ev.event_id=e.id AND ev.eventable_type='teams'
+JOIN team_user tu ON tu.team_id=ev.eventable_id AND tu.deleted_at IS NULL
+WHERE e.club_id={c} AND e.deleted_at IS NOT NULL
+  AND e.deleted_at >= DATE_SUB({_q(today)}, INTERVAL {int(days_back)} DAY)
+  AND e.start_date >= DATE_SUB({_q(today)}, INTERVAL 1 DAY)
+  AND tu.user_id IN {kids}
+UNION ALL
+SELECT e.start_date, e.title, 'άλλαξε' AS change_type, e.updated_at AS changed_at
+FROM events e
+JOIN eventables ev ON ev.event_id=e.id AND ev.eventable_type='teams'
+JOIN team_user tu ON tu.team_id=ev.eventable_id AND tu.deleted_at IS NULL
+WHERE e.club_id={c} AND e.deleted_at IS NULL
+  AND e.updated_at >= DATE_SUB({_q(today)}, INTERVAL {int(days_back)} DAY)
+  AND e.updated_at > DATE_ADD(e.created_at, INTERVAL 1 DAY)
+  AND e.start_date >= {_q(today)}
+  AND tu.user_id IN {kids}
+ORDER BY changed_at DESC
+LIMIT 50;
+"""
+    return mb.run_sql(sql)

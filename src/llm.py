@@ -110,6 +110,19 @@ def _is_rate_limit(e: Exception) -> bool:
     return "rate_limit" in msg or "429" in msg
 
 
+_EVENT_TIPS_SYSTEM = (
+    "Είσαι πρακτικός βοηθός γονέα αθλητή. Λαμβάνεις λίστα events (JSON) με ώρα, τίτλο, "
+    "τοποθεσία και (προαιρετικά) καιρό. Για ΚΑΘΕ event γράψε ΕΝΑ σύντομο heads-up στα ελληνικά "
+    "(<=160 χαρακτήρες):\n"
+    "- Πρακτική πρόταση «φύγετε ~X′ νωρίτερα» αν η ώρα/τοποθεσία υποδηλώνει κίνηση/δύσκολο παρκάρισμα "
+    "(π.χ. κεντρικές περιοχές, Σαββατοκύριακο πρωί). Πες ότι είναι ΕΚΤΙΜΗΣΗ.\n"
+    "- Τι να φέρει (νερό, κατάλληλα παπούτσια· για αγώνα: εμφάνιση).\n"
+    "- Αν δίνεται καιρός: ζέστη→νερό/καπέλο, βροχή→ομπρέλα/πιθανή αλλαγή.\n"
+    "Επίστρεψε ΜΟΝΟ JSON: {\"tips\": [\"...\", ...]} με ΑΚΡΙΒΩΣ ίδιο πλήθος και σειρά με τα events. "
+    "Χωρίς preamble."
+)
+
+
 _DRAFT_SYSTEM = (
     "Γράφεις εκ μέρους αθλητικού συλλόγου ένα ευγενικό, ζεστό αλλά επαγγελματικό μήνυμα "
     "προς τον γονέα ενός αθλητή. Στα ελληνικά.\n"
@@ -440,6 +453,34 @@ class LLMClient:
             if _is_rate_limit(e):
                 return "⚠️ " + _RATE_LIMIT_MSG
             return f"Δεν ήταν δυνατή η σύνταξη του μηνύματος ({e})."
+
+
+    def event_tips(self, events: list[dict]) -> list[str]:
+        """Ένα σύντομο πρακτικό heads-up ανά event (ίδια σειρά). Best-effort -> [] σε σφάλμα."""
+        if not events:
+            return []
+        slim = [
+            {"start": str(e.get("start_date")), "title": e.get("title"),
+             "location": e.get("location_alias"), "weather": e.get("weather")}
+            for e in events
+        ]
+        user_msg = "Events:\n```json\n" + json.dumps(slim, ensure_ascii=False, default=str) + "\n```"
+        try:
+            resp = self._client.messages.create(
+                model=self.model,
+                max_tokens=1200,
+                temperature=0.4,
+                system=[_cached(_EVENT_TIPS_SYSTEM)],
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            raw = resp.content[0].text if resp.content else ""
+            out = _extract_json(raw)
+            tips = out.get("tips") or []
+            # pad/truncate ώστε να ταιριάζει με τα events
+            tips = (list(tips) + [""] * len(events))[:len(events)]
+            return [str(t) for t in tips]
+        except Exception:
+            return [""] * len(events)
 
 
 # ---------- Legacy module-level (env-driven) -------------------------------
