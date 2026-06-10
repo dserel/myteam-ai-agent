@@ -276,6 +276,17 @@ if prompt:
             "user_role": user_role,
             "today": today_str,
         }
+
+        # --- Conversational memory: ξαναγράφουμε follow-up σε αυτόνομη ερώτηση ---
+        _recent = st.session_state.messages[:-1][-6:]  # τελευταία ~3 ζεύγη Q&A
+        try:
+            effective_prompt = llm_client.rewrite_followup(prompt, _recent)
+        except Exception:
+            effective_prompt = prompt
+        if not effective_prompt or not effective_prompt.strip():
+            effective_prompt = prompt
+        if effective_prompt.strip() != prompt.strip():
+            st.caption(f"↳ Κατάλαβα την ερώτηση ως: _{effective_prompt}_")
         msg_payload: dict = {
             "role": "assistant",
             "content": "",
@@ -308,11 +319,11 @@ if prompt:
             try:
                 if attempt == 0:
                     placeholder.markdown("🧠 _Παράγω SQL…_")
-                    gen = llm_client.generate_sql(prompt, ctx)
+                    gen = llm_client.generate_sql(effective_prompt, ctx)
                 else:
                     placeholder.markdown(f"🔧 _Διορθώνω SQL (προσπάθεια {attempt + 1}/{MAX_ATTEMPTS})…_")
                     gen = llm_client.fix_sql_after_error(
-                        question=prompt,
+                        question=effective_prompt,
                         failed_sql=previous_attempts[-1].split("\nERROR:\n", 1)[0] if previous_attempts else (raw_sql or ""),
                         error=previous_attempts[-1].split("\nERROR:\n", 1)[1] if previous_attempts and "\nERROR:\n" in previous_attempts[-1] else "(unknown)",
                         context=ctx,
@@ -389,7 +400,7 @@ if prompt:
         if rows is not None and not err and not rejected_reason:
             try:
                 placeholder.markdown("✍️ _Συντάσσω απάντηση…_")
-                aw = llm_client.write_answer(prompt, validated_sql, rows)
+                aw = llm_client.write_answer(effective_prompt, validated_sql, rows)
                 answer = aw.get("text", "")
                 chart_spec = aw.get("chart")
             except Exception as e:
@@ -412,7 +423,7 @@ if prompt:
                     tenant_club_id=int(tenant_club_id),
                     user_role=user_role,
                     tenant_user_id=tenant_user_id,
-                    question=prompt,
+                    question=effective_prompt,
                     generated_sql=raw_sql,
                     validated_sql=validated_sql,
                     row_count=(len(rows) if rows is not None else None),

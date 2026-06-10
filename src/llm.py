@@ -41,6 +41,17 @@ _JSON_ONLY_SUFFIX = (
     "Χωρίς markdown code fences, χωρίς κείμενο πριν ή μετά το JSON."
 )
 
+_REWRITE_SYSTEM = (
+    "Είσαι βοηθός που ξαναγράφει ερωτήσεις. Σου δίνεται το ιστορικό μιας "
+    "συνομιλίας (ερωτήσεις χρήστη για δεδομένα ενός αθλητικού συλλόγου) και "
+    "μια νέα ερώτηση. Αν η νέα ερώτηση είναι follow-up που εξαρτάται από τα "
+    "προηγούμενα (π.χ. «και πέρσι;», «μόνο τους ενεργούς», «αυτής της ομάδας»), "
+    "ξαναγράψ' την ώστε να είναι ΠΛΗΡΩΣ ΑΥΤΟΤΕΛΗΣ και κατανοητή χωρίς το ιστορικό. "
+    "Αν είναι ήδη αυτοτελής, επίστρεψέ την ΑΥΤΟΥΣΙΑ. "
+    "Διατήρησε τη γλώσσα (ελληνικά) και το νόημα. "
+    "Απάντησε ΜΟΝΟ με το κείμενο της ερώτησης — χωρίς εισαγωγικά, χωρίς εξήγηση, χωρίς πρόθεμα."
+)
+
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
 
@@ -155,6 +166,43 @@ class LLMClient:
             f"{attempts_block}"
         )
         return self._complete_json(system, user_msg, self.sql_temperature)
+
+    # ---------- conversational memory -------------------------------------
+
+    def rewrite_followup(self, question: str, history: list[dict] | None) -> str:
+        """
+        Ξαναγράφει ένα (πιθανώς ελλειπτικό) follow-up σε αυτόνομη ερώτηση,
+        χρησιμοποιώντας το ιστορικό της συνομιλίας. Αν δεν υπάρχει ιστορικό
+        ή η ερώτηση είναι ήδη αυτοτελής, επιστρέφει την ίδια την ερώτηση.
+        Σε σφάλμα -> επιστρέφει το αρχικό question (graceful degradation).
+        """
+        if not history:
+            return question
+        convo: list[str] = []
+        for m in history[-8:]:
+            role = "Χρήστης" if m.get("role") == "user" else "Βοηθός"
+            content = (m.get("content") or "").strip()
+            if content:
+                convo.append(f"{role}: {content[:500]}")
+        if not convo:
+            return question
+        user_msg = (
+            "ΙΣΤΟΡΙΚΟ ΣΥΝΟΜΙΛΙΑΣ:\n"
+            + "\n".join(convo)
+            + f"\n\nΝΕΑ ΕΡΩΤΗΣΗ ΧΡΗΣΤΗ: {question}"
+        )
+        try:
+            resp = self._client.messages.create(
+                model=self.model,
+                max_tokens=300,
+                temperature=0.0,
+                system=_REWRITE_SYSTEM,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            out = (resp.content[0].text if resp.content else "").strip()
+            return out or question
+        except Exception:
+            return question
 
     # ---------- answer writing ---------------------------------------------
 
