@@ -110,6 +110,33 @@ def _is_rate_limit(e: Exception) -> bool:
     return "rate_limit" in msg or "429" in msg
 
 
+_DRAFT_SYSTEM = (
+    "Γράφεις εκ μέρους αθλητικού συλλόγου ένα ευγενικό, ζεστό αλλά επαγγελματικό μήνυμα "
+    "προς τον γονέα ενός αθλητή. Στα ελληνικά.\n"
+    "- Αν κανάλι = email: ξεκίνα με «Θέμα: ...» σε πρώτη γραμμή, μετά κενή γραμμή και το σώμα.\n"
+    "- Αν κανάλι = sms: 1-2 σύντομες προτάσεις, έως ~300 χαρακτήρες, χωρίς θέμα.\n"
+    "- Τόνος: φιλικός, υποστηρικτικός — ΟΧΙ απειλητικός ή πιεστικός.\n"
+    "- ΜΗΝ υπόσχεσαι εκπτώσεις, τιμές ή όρους. ΜΗΝ εφευρίσκεις στοιχεία.\n"
+    "- Αν δεν ξέρεις όνομα γονέα, χρησιμοποίησε ουδέτερη προσφώνηση (π.χ. «Αγαπητοί γονείς»).\n"
+    "- Επίστρεψε ΜΟΝΟ το μήνυμα, χωρίς εξηγήσεις πριν/μετά."
+)
+
+
+_BRIEFING_SYSTEM = (
+    "Είσαι έμπειρος σύμβουλος αθλητικών συλλόγων. Λαμβάνεις μετρικές ενός συλλόγου σε JSON "
+    "και γράφεις ΣΥΝΤΟΜΟ executive briefing για τον manager, στα ελληνικά, σε markdown.\n"
+    "Κανόνες:\n"
+    "- Ξεκίνα με ΜΙΑ πρόταση συνολικής εικόνας.\n"
+    "- Μετά 3-4 σημεία προτεραιότητας, ταξινομημένα κατά σημαντικότητα / οικονομική επίπτωση. "
+    "Κάθε σημείο: τι συμβαίνει (με ΣΥΓΚΕΚΡΙΜΕΝΑ νούμερα) + **Ενέργεια:** συγκεκριμένη πρόταση δράσης.\n"
+    "- Μορφή ποσών: €1.234. Ποσοστά: 87,8%.\n"
+    "- Ανέδειξε ρίσκα (χαμηλή παρουσία, ληξιπρόθεσμες/ανεξόφλητες, αθλητές σε κίνδυνο) ΚΑΙ θετικά "
+    "(αύξηση εσόδων/εγγραφών, υψηλή είσπραξη).\n"
+    "- Μέγιστο ~180 λέξεις. ΟΧΙ πίνακες, ΟΧΙ SQL, ΟΧΙ preamble τύπου «Με βάση τα δεδομένα».\n"
+    "- Αν μια μετρική είναι null/λείπει, αγνόησέ την — μην την αναφέρεις."
+)
+
+
 _RATE_LIMIT_MSG = (
     "Υπέρβαση ορίου ρυθμού του Anthropic API (rate limit). "
     "Περίμενε ~1 λεπτό και ξαναδοκίμασε. Για μόνιμη λύση: το μοντέλο είναι ήδη Haiku "
@@ -357,6 +384,57 @@ class LLMClient:
         out["text"] = (parsed.get("text") or "").strip()
         out["chart"] = parsed.get("chart")
         out["followups"] = parsed.get("followups") or []
+
+
+    def write_briefing(self, metrics: dict) -> str:
+        """
+        Παίρνει ένα dict με μετρικές συλλόγου και επιστρέφει markdown executive
+        briefing (proactive insights + προτεινόμενες ενέργειες). Best-effort:
+        σε rate limit / σφάλμα επιστρέφει σύντομο fallback μήνυμα.
+        """
+        user_msg = (
+            "Μετρικές συλλόγου (JSON):\n```json\n"
+            + json.dumps(metrics, ensure_ascii=False, default=str)
+            + "\n```\nΓράψε το briefing."
+        )
+        try:
+            resp = self._client.messages.create(
+                model=self.model,
+                max_tokens=900,
+                temperature=0.4,
+                system=[_cached(_BRIEFING_SYSTEM)],
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            return (resp.content[0].text if resp.content else "").strip()
+        except Exception as e:
+            if _is_rate_limit(e):
+                return "⚠️ " + _RATE_LIMIT_MSG
+            return f"Δεν ήταν δυνατή η σύνταξη του briefing ({e})."
+
+
+    def draft_parent_message(self, *, athlete: str, reason: str, details: str = "",
+                             channel: str = "email", club_name: str = "ο σύλλογος") -> str:
+        """Συντάσσει προσωποποιημένο μήνυμα (email/sms) προς τον γονέα. Best-effort."""
+        user_msg = (
+            f"Αθλητής/τρια: {athlete}\n"
+            f"Σύλλογος: {club_name}\n"
+            f"Λόγος επικοινωνίας: {reason}\n"
+            f"Λεπτομέρειες: {details or '-'}\n"
+            f"Κανάλι: {channel}"
+        )
+        try:
+            resp = self._client.messages.create(
+                model=self.model,
+                max_tokens=600,
+                temperature=0.5,
+                system=[_cached(_DRAFT_SYSTEM)],
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            return (resp.content[0].text if resp.content else "").strip()
+        except Exception as e:
+            if _is_rate_limit(e):
+                return "⚠️ " + _RATE_LIMIT_MSG
+            return f"Δεν ήταν δυνατή η σύνταξη του μηνύματος ({e})."
 
 
 # ---------- Legacy module-level (env-driven) -------------------------------

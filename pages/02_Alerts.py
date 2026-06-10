@@ -23,6 +23,7 @@ import streamlit as st
 
 from src.auth import login_gate, logout_button, require_admin
 from src.metabase import MetabaseClient, MetabaseError
+from src.llm import LLMClient
 
 st.set_page_config(page_title="Alerts · myTeam AI Agent", page_icon="🚨", layout="wide")
 
@@ -59,6 +60,17 @@ def _mb(url: str, api: str, sess: str, db: int) -> MetabaseClient:
 
 
 mb = _mb(METABASE_URL, METABASE_API_KEY, METABASE_SESSION, METABASE_DATABASE_ID)
+
+ANTHROPIC_API_KEY = _secret("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = _secret("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
+
+
+@st.cache_resource(show_spinner=False)
+def _llm(key: str, model: str):
+    return LLMClient(api_key=key, model=model) if key else None
+
+
+llm = _llm(ANTHROPIC_API_KEY, CLAUDE_MODEL)
 
 
 # ---------------------------------------------------------------------------
@@ -166,6 +178,32 @@ FROM users WHERE club_id={{C}} AND role=4 AND deleted_at IS NULL AND birthday IS
  AND MONTH(birthday)=MONTH({{T}})
 ORDER BY DAY(birthday) LIMIT 100
 """,
+    "money_core": """
+SELECT
+ (SELECT COALESCE(SUM(s.amount),0) FROM subscription_users su JOIN subscriptions s ON s.id=su.subscription_id JOIN users u ON u.id=su.user_id
+    WHERE s.club_id={{C}} AND s.status=1 AND u.deleted_at IS NULL AND su.subscription_at<={{T}}) AS contracted_active,
+ (SELECT COALESCE(SUM(su.total_paid),0) FROM subscription_users su JOIN subscriptions s ON s.id=su.subscription_id JOIN users u ON u.id=su.user_id
+    WHERE s.club_id={{C}} AND s.status=1 AND u.deleted_at IS NULL AND su.subscription_at<={{T}}) AS collected_active
+""",
+    "at_risk": """
+WITH active_athletes AS (
+  SELECT DISTINCT su.user_id, s.amount FROM subscription_users su
+  JOIN subscriptions s ON s.id=su.subscription_id JOIN users u ON u.id=su.user_id
+  WHERE s.club_id={{C}} AND s.status=1 AND u.deleted_at IS NULL
+    AND su.subscription_at<={{T}} AND (su.due_at IS NULL OR su.due_at>={{T}})
+),
+recent AS (
+  SELECT ae.user_id FROM appearance_events ae JOIN events e ON e.id=ae.event_id AND e.deleted_at IS NULL JOIN teams t ON t.id=ae.team_id
+  WHERE t.club_id={{C}} AND ae.check=1 AND e.start_date>=DATE_SUB({{T}},INTERVAL 30 DAY) AND e.start_date<{{T}} GROUP BY ae.user_id
+),
+prior AS (
+  SELECT ae.user_id FROM appearance_events ae JOIN events e ON e.id=ae.event_id AND e.deleted_at IS NULL JOIN teams t ON t.id=ae.team_id
+  WHERE t.club_id={{C}} AND ae.check=1 AND e.start_date>=DATE_SUB({{T}},INTERVAL 90 DAY) AND e.start_date<DATE_SUB({{T}},INTERVAL 30 DAY) GROUP BY ae.user_id
+)
+SELECT COUNT(*) AS at_risk_athletes, COALESCE(SUM(a.amount),0) AS at_risk_value
+FROM active_athletes a
+WHERE a.user_id NOT IN (SELECT user_id FROM recent) AND a.user_id IN (SELECT user_id FROM prior)
+""",
 }
 
 
@@ -255,9 +293,76 @@ if kpi_rows:
 
 st.divider()
 
-tab_alerts, tab_trends, tab_teams, tab_fin, tab_extra = st.tabs(
-    ["🚨 Alerts", "📈 Trends", "🏐 Ομάδες & Events", "💶 Οικονομικά", "🎂 Extras"]
+tab_brief, tab_alerts, tab_trends, tab_teams, tab_fin, tab_extra = st.tabs(
+    ["📋 Briefing", "🚨 Alerts", "📈 Trends", "🏐 Ομάδες & Events", "💶 Οικονομικά", "🎂 Extras"]
 )
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
+def _briefing(metrics: dict, model: str) -> str:
+    return llm.write_briefing(metrics) if llm else ""
+
+
+def parent_message_ui(rows: list, label_col: str, key: str, reason: str) -> None:
+    """Επιλογή αθλητή από λίστα -> Claude συντάσσει μήνυμα προς γονέα."""
+    if not llm or not rows:
+        return
+    with st.expander("✉️ Σύνταξη μηνύματος σε γονέα"):
+        names = [r.get(label_col) for r in rows if r.get(label_col)]
+        if not names:
+            return
+        sel = st.selectbox("Αθλητής", names, key=f"selp_{key}")
+        ch = st.radio("Κανάλι", ["email", "sms"], horizontal=True, key=f"chp_{key}")
+        if st.button("✍️ Σύνταξη", key=f"btnp_{key}"):
+            with st.spinner("Σύνταξη μηνύματος…"):
+                msg = llm.draft_parent_message(athlete=sel, reason=reason, channel=ch, club_name="ο σύλλογός μας")
+            st.text_area("Μήνυμα (αντίγραψέ το)", value=msg, height=240, key=f"outp_{key}")
+
+
+# ===========================================================================
+# Tab: Briefing (proactive narrative + recommendations)
+# ===========================================================================
+with tab_brief:
+    st.subheader("📋 Εβδομαδιαίο briefing")
+    st.caption("Σύνοψη + προτεινόμενες ενέργειες, βασισμένα στα τρέχοντα δεδομένα.")
+    if not llm:
+        st.warning("Λείπει ANTHROPIC_API_KEY στα secrets — το briefing χρειάζεται το Claude.")
+    else:
+        kpi_b = safe(lambda: runq("kpi", club_id, today_str), "kpi") or [{}]
+        money_b = safe(lambda: runq("money_core", club_id, today_str), "money") or [{}]
+        risk_b = safe(lambda: runq("at_risk", club_id, today_str), "at_risk") or [{}]
+        mom_b = safe(lambda: run_detector("mom_revenue", club_id, today_str), "mom") or []
+        low_b = safe(lambda: runq("attendance_by_team", club_id, today_str), "attendance") or []
+        dorm_b = safe(lambda: runq("dormant_list", club_id, today_str), "dormant") or []
+        k = kpi_b[0] if kpi_b else {}
+        mny = money_b[0] if money_b else {}
+        rsk = risk_b[0] if risk_b else {}
+        contracted = float(mny.get("contracted_active") or 0)
+        collected = float(mny.get("collected_active") or 0)
+        coll_rate = round(100.0 * collected / contracted, 1) if contracted else None
+        metrics = {
+            "ενεργοί_αθλητές": k.get("active_athletes"),
+            "νέες_εγγραφές_μήνα": k.get("new_athletes_month"),
+            "έσοδα_μήνα": k.get("income_month"),
+            "έξοδα_μήνα": k.get("outgoing_month"),
+            "καθαρό_μήνα": (float(k.get("income_month") or 0) - float(k.get("outgoing_month") or 0)),
+            "μέση_παρουσία_30η_%": k.get("attendance_pct_30d"),
+            "ληξιπρόθεσμες_πλήθος": k.get("overdue_count"),
+            "ληξιπρόθεσμες_οφειλή_€": k.get("total_owed"),
+            "ποσοστό_είσπραξης_%": coll_rate,
+            "αθλητές_σε_κίνδυνο": rsk.get("at_risk_athletes"),
+            "αξία_σε_κίνδυνο_€": rsk.get("at_risk_value"),
+            "κοιμισμένοι_αθλητές": len(dorm_b),
+            "έσοδα_μήνα_vs_προηγ_%": (mom_b[0].get("change_pct") if mom_b else None),
+            "ομάδες_χαμηλής_παρουσίας": [
+                {"ομάδα": r.get("team"), "παρουσία_%": r.get("attendance_pct")} for r in (low_b[:3] if low_b else [])
+            ],
+        }
+        if st.button("✨ Δημιούργησε / ανανέωσε briefing"):
+            _briefing.clear()
+        with st.spinner("Σύνταξη briefing…"):
+            text = _briefing(metrics, CLAUDE_MODEL)
+        st.markdown(text or "_(κενό)_")
 
 # ===========================================================================
 # Tab: Alerts
@@ -270,6 +375,8 @@ with tab_alerts:
         st.metric("Σε κίνδυνο", len(churn))
         if churn:
             table(churn, ["athlete", "subscription_title", "attended_30_to_90d_ago", "last_present_at", "email", "phone"], "churn_risk")
+            parent_message_ui(churn, "athlete", "churn",
+                              "Ο αθλητής λείπει από τις προπονήσεις τον τελευταίο μήνα· θέλουμε να δούμε αν όλα είναι καλά και να τον ενθαρρύνουμε να επιστρέψει.")
         else:
             st.success("✓ Κανένας σε κίνδυνο.")
 
@@ -290,6 +397,8 @@ with tab_alerts:
     if overdue is not None:
         if overdue:
             table(overdue, ["athlete", "subscription", "owed", "expired_at", "days_overdue"], "overdue")
+            parent_message_ui(overdue, "athlete", "overdue",
+                              "Εκκρεμεί η ανανέωση/εξόφληση της συνδρομής του αθλητή — ευγενική υπενθύμιση.")
         else:
             st.success("✓ Καμία ληξιπρόθεσμη συνδρομή.")
 
@@ -391,6 +500,20 @@ with tab_teams:
 # Tab: Financials
 # ===========================================================================
 with tab_fin:
+    st.subheader("💳 Είσπραξη & ρίσκο")
+    mc = safe(lambda: runq("money_core", club_id, today_str), "money") or [{}]
+    rk = safe(lambda: runq("at_risk", club_id, today_str), "at_risk") or [{}]
+    if mc:
+        contracted = float((mc[0] or {}).get("contracted_active") or 0)
+        collected = float((mc[0] or {}).get("collected_active") or 0)
+        rate = round(100.0 * collected / contracted, 1) if contracted else 0
+        fcols = st.columns(4)
+        fcols[0].metric("Συμβεβλημένα", eur(contracted))
+        fcols[1].metric("Εισπραγμένα", eur(collected))
+        fcols[2].metric("Ποσοστό είσπραξης", f"{rate}%")
+        fcols[3].metric("Αξία σε κίνδυνο", eur((rk[0] or {}).get("at_risk_value")),
+                        delta=f"{int((rk[0] or {}).get('at_risk_athletes') or 0)} αθλητές", delta_color="off")
+    st.divider()
     st.subheader("📈 Έσοδα μήνα vs προηγούμενου")
     rev = safe(lambda: run_detector("mom_revenue", club_id, today_str), "mom")
     if rev:
