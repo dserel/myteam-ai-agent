@@ -520,8 +520,9 @@ if prompt:
                     f"📡 _Τρέχω query στο Metabase{'' if attempt == 0 else ' (retry)'}…_"
                 )
                 rows = mb_client.run_sql(validated_sql)
-            except MetabaseError as e:
-                # Συνήθως schema mismatch — δίνουμε στο LLM ευκαιρία να διορθώσει
+            except Exception as e:
+                # MetabaseError, timeout, ή οτιδήποτε άλλο — ΠΟΤΕ δεν κρασάρουμε το app.
+                # Δίνουμε στο LLM ευκαιρία να διορθώσει (συνήθως schema mismatch).
                 err_text = str(e)
                 # Συμμάζεμα: το error του Metabase είναι JSON dump — κράτα μόνο
                 # το "error" field αν υπάρχει για να μη φορτώνουμε context.

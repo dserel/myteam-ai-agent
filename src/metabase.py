@@ -36,7 +36,7 @@ class MetabaseClient:
     database_id: int
     api_key: str = ""
     session_token: str = ""
-    timeout_s: int = 15
+    timeout_s: int = 40
 
     def __post_init__(self) -> None:
         self.url = self.url.rstrip("/")
@@ -76,15 +76,26 @@ class MetabaseClient:
             "database": self.database_id,
         }
         url = f"{self.url}/api/dataset"
-        r = requests.post(url, headers=self._headers, json=payload, timeout=self.timeout_s)
+        try:
+            r = requests.post(url, headers=self._headers, json=payload, timeout=self.timeout_s)
+        except requests.exceptions.RequestException as e:
+            # timeout / connection / DNS — όλα γίνονται MetabaseError ώστε ο caller
+            # (chat agent) να τα πιάνει ομοιόμορφα και να μην κρασάρει το app.
+            raise MetabaseError(f"request error: {type(e).__name__}: {e}") from e
+
         if r.status_code not in (200, 202):
             raise MetabaseError(f"HTTP {r.status_code}: {r.text[:500]}")
 
-        body = r.json()
+        try:
+            body = r.json()
+        except ValueError as e:
+            raise MetabaseError(f"invalid JSON response: {r.text[:300]}") from e
+        if not isinstance(body, dict):
+            raise MetabaseError(f"unexpected response shape: {str(body)[:300]}")
         if body.get("status") == "failed":
             raise MetabaseError(f"query failed: {body.get('error', 'unknown')}")
 
-        data = body.get("data", {})
+        data = body.get("data", {}) or {}
         cols = [c["name"] for c in data.get("cols", [])]
         rows = data.get("rows", [])
         return [dict(zip(cols, row)) for row in rows]
