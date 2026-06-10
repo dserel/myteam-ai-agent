@@ -74,8 +74,9 @@ Pivot γονιού-παιδιού.
 ### `eventables`
 Polymorphic: ποιος συμμετέχει σε event.
 - `event_id` → events.id
-- `eventable_type` *(string — Laravel morph: π.χ. `'App\\Models\\Team'` ή `'App\\Models\\User'`. **ΕΠΙΒΕΒΑΙΩΣΕ τις τιμές με `SELECT DISTINCT eventable_type FROM eventables`.**)*
-- `eventable_id` *(team_id ή user_id ανάλογα)*
+- `eventable_type` *(✅ ΕΠΙΒΕΒΑΙΩΜΕΝΟ: οι τιμές είναι ΑΚΡΙΒΩΣ `'teams'` ή `'users'` — ΟΧΙ Laravel morph strings)*
+- `eventable_id` *(= teams.id όταν type='teams', = users.id όταν type='users')*
+- **Για events μιας ομάδας:** `JOIN eventables ev ON ev.event_id=e.id AND ev.eventable_type='teams' JOIN teams t ON t.id=ev.eventable_id`. Events μπορεί να αφορούν και μεμονωμένο χρήστη (`eventable_type='users'`).
 
 ### `appearance_events`
 Παρουσίες σε events.
