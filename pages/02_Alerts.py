@@ -205,6 +205,21 @@ SELECT COUNT(*) AS at_risk_athletes, COALESCE(SUM(a.amount),0) AS at_risk_value
 FROM active_athletes a
 WHERE a.user_id NOT IN (SELECT user_id FROM recent) AND a.user_id IN (SELECT user_id FROM prior)
 """,
+    "feature_adoption": """
+SELECT 'Παρουσίες' AS feature, COUNT(*) AS total,
+   SUM(ae.created_at >= DATE_SUB({{T}},INTERVAL 30 DAY)) AS last30, MAX(ae.created_at) AS last_used
+ FROM appearance_events ae JOIN teams t ON t.id=ae.team_id WHERE t.club_id={{C}}
+UNION ALL
+SELECT 'Έξοδα', COUNT(*), SUM(created_at>=DATE_SUB({{T}},INTERVAL 30 DAY)), MAX(created_at) FROM outgoings WHERE club_id={{C}} AND deleted_at IS NULL
+UNION ALL
+SELECT 'Έσοδα', COUNT(*), SUM(created_at>=DATE_SUB({{T}},INTERVAL 30 DAY)), MAX(created_at) FROM incomes WHERE club_id={{C}} AND deleted_at IS NULL
+UNION ALL
+SELECT 'Πρόγραμμα/Events', COUNT(*), SUM(created_at>=DATE_SUB({{T}},INTERVAL 30 DAY)), MAX(created_at) FROM events WHERE club_id={{C}} AND deleted_at IS NULL
+UNION ALL
+SELECT 'Ανακοινώσεις', COUNT(*), SUM(created_at>=DATE_SUB({{T}},INTERVAL 30 DAY)), MAX(created_at) FROM posts WHERE club_id={{C}}
+UNION ALL
+SELECT 'Αποτελέσματα αγώνων', COUNT(*), SUM(created_at>=DATE_SUB({{T}},INTERVAL 30 DAY)), MAX(created_at) FROM events WHERE club_id={{C}} AND deleted_at IS NULL AND type=2 AND result IS NOT NULL
+""",
 }
 
 
@@ -221,6 +236,16 @@ def runq(key: str, club_id: int, today: str) -> list[dict]:
 def run_detector(detector: str, club_id: int, today: str) -> list[dict]:
     sql = (DETECTORS_DIR / f"{detector}.sql").read_text(encoding="utf-8")
     return mb.run_sql(sql.replace("{{tenant_club_id}}", str(club_id)).replace("{{today}}", f"'{today}'"))
+
+
+def classify_feature(r: dict) -> str:
+    total = int(r.get("total") or 0)
+    last30 = int(r.get("last30") or 0)
+    if total == 0:
+        return "δεν χρησιμοποιείται"
+    if last30 == 0:
+        return "σταμάτησε"
+    return "ενεργό"
 
 
 def eur(n) -> str:
@@ -341,6 +366,12 @@ with tab_brief:
         contracted = float(mny.get("contracted_active") or 0)
         collected = float(mny.get("collected_active") or 0)
         coll_rate = round(100.0 * collected / contracted, 1) if contracted else None
+        feat_rows = safe(lambda: runq("feature_adoption", club_id, today_str), "features") or []
+        feat_status = [
+            {"feature": r.get("feature"), "κατάσταση": classify_feature(r),
+             "τελευταία_χρήση": (str(r.get("last_used"))[:10] if r.get("last_used") else None)}
+            for r in feat_rows
+        ]
         metrics = {
             "ενεργοί_αθλητές": k.get("active_athletes"),
             "νέες_εγγραφές_μήνα": k.get("new_athletes_month"),
@@ -358,12 +389,23 @@ with tab_brief:
             "ομάδες_χαμηλής_παρουσίας": [
                 {"ομάδα": r.get("team"), "παρουσία_%": r.get("attendance_pct")} for r in (low_b[:3] if low_b else [])
             ],
+            "χρήση_features": feat_status,
         }
         if st.button("✨ Δημιούργησε / ανανέωσε briefing"):
             _briefing.clear()
         with st.spinner("Σύνταξη briefing…"):
             text = _briefing(metrics, CLAUDE_MODEL)
         st.markdown(text or "_(κενό)_")
+
+        if feat_status:
+            st.divider()
+            st.markdown("##### 🧩 Χρήση εφαρμογής")
+            badge = {"ενεργό": "🟢", "σταμάτησε": "🟠", "δεν χρησιμοποιείται": "🔴"}
+            fcols = st.columns(3)
+            for i, f in enumerate(feat_status):
+                stt = f["κατάσταση"]
+                extra = f" · τελευταία: {f['τελευταία_χρήση']}" if (stt != "ενεργό" and f.get("τελευταία_χρήση")) else ""
+                fcols[i % 3].markdown(f"{badge.get(stt,'⚪')} **{f['feature']}** — {stt}{extra}")
 
 # ===========================================================================
 # Tab: Alerts
