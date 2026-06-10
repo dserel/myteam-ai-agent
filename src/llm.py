@@ -11,8 +11,8 @@ Wrappers γύρω από Anthropic Claude.
   2. Module-level (legacy, χρησιμοποιεί ANTHROPIC_API_KEY env var)
 
 Σημείωση: Το Claude δεν έχει `response_mime_type=application/json`.
-Για να εξαναγκάσουμε JSON output κάνουμε **assistant prefill** με `{`
-και ξαναπροσθέτουμε το `{` στην αρχή της απάντησης πριν το parse.
+Εξαναγκάζουμε JSON output μέσω instruction στο system prompt και
+κάνουμε robust parse με `_extract_json` (αφαιρεί τυχόν ```json fences).
 """
 
 from __future__ import annotations
@@ -35,6 +35,11 @@ ANSWER_PROMPT_PATH = BASE_DIR / "prompts" / "answer_writer.md"
 # Για φθηνότερο/γρηγορότερο: "claude-haiku-4-5-20251001".
 DEFAULT_MODEL = "claude-sonnet-4-6"
 MAX_TOKENS = 4096
+
+_JSON_ONLY_SUFFIX = (
+    "\n\nIMPORTANT: Απάντησε ΜΟΝΟ με ένα έγκυρο JSON object. "
+    "Χωρίς markdown code fences, χωρίς κείμενο πριν ή μετά το JSON."
+)
 
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
@@ -81,20 +86,17 @@ class LLMClient:
 
     def _complete_json(self, system: str, user_msg: str, temperature: float) -> dict:
         """
-        Στέλνει ένα single-turn message και εξαναγκάζει JSON object output
-        μέσω assistant prefill με `{`.
+        Στέλνει ένα single-turn message και ζητάει JSON object output
+        μέσω instruction. Robust parse με `_extract_json`.
         """
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=MAX_TOKENS,
             temperature=temperature,
-            system=system,
-            messages=[
-                {"role": "user", "content": user_msg},
-                {"role": "assistant", "content": "{"},
-            ],
+            system=system + _JSON_ONLY_SUFFIX,
+            messages=[{"role": "user", "content": user_msg}],
         )
-        raw = "{" + (resp.content[0].text if resp.content else "")
+        raw = resp.content[0].text if resp.content else ""
         return _extract_json(raw)
 
     # ---------- health -----------------------------------------------------
