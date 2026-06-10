@@ -45,6 +45,7 @@ Pivot γονιού-παιδιού.
 - `user_id` → users.id *(το παιδί/αθλητής)*
 - `status` *(varchar, '1' = active)*
 - `gets_notifications`
+- **⚠ ΣΥΧΝΑ ΚΕΝΟ.** Η οικογενειακή σχέση στο myTeam δηλώνεται ΚΥΡΙΩΣ μέσω κοινού `users.household_id`. Για να βρεις τα παιδιά ενός γονιού, χρησιμοποίησε households (ίδιο household_id) ΚΑΙ parent_users μαζί (UNION).
 
 ### `seasons`
 - `id`, `name`, `current` *(1 = τρέχουσα)*, `club_id`, `start_date`, `end_date`

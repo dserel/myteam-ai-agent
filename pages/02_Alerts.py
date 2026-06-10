@@ -220,6 +220,17 @@ SELECT 'Ανακοινώσεις', COUNT(*), SUM(created_at>=DATE_SUB({{T}},INTE
 UNION ALL
 SELECT 'Αποτελέσματα αγώνων', COUNT(*), SUM(created_at>=DATE_SUB({{T}},INTERVAL 30 DAY)), MAX(created_at) FROM events WHERE club_id={{C}} AND deleted_at IS NULL AND type=2 AND result IS NOT NULL
 """,
+    "athletes_no_parent": """
+SELECT a.id, CONCAT_WS(' ', a.name, a.last_name) AS athlete, MIN(t.name) AS team
+FROM users a
+JOIN team_user tu ON tu.user_id=a.id AND (tu.first_coach=0 OR tu.first_coach IS NULL) AND tu.deleted_at IS NULL
+JOIN teams t ON t.id=tu.team_id AND t.club_id={{C}} AND t.status=1
+WHERE a.deleted_at IS NULL AND a.status=1 AND a.role=4
+  AND NOT EXISTS (SELECT 1 FROM parent_users pu WHERE pu.user_id=a.id)
+  AND NOT EXISTS (SELECT 1 FROM users p WHERE p.household_id=a.household_id AND p.role=5 AND p.id<>a.id AND p.deleted_at IS NULL)
+GROUP BY a.id, athlete
+ORDER BY athlete LIMIT 200
+""",
 }
 
 
@@ -385,6 +396,7 @@ with tab_brief:
             "αθλητές_σε_κίνδυνο": rsk.get("at_risk_athletes"),
             "αξία_σε_κίνδυνο_€": rsk.get("at_risk_value"),
             "κοιμισμένοι_αθλητές": len(dorm_b),
+            "αθλητές_χωρίς_συνδεδεμένο_γονέα": len(safe(lambda: runq("athletes_no_parent", club_id, today_str), "no-parent") or []),
             "έσοδα_μήνα_vs_προηγ_%": (mom_b[0].get("change_pct") if mom_b else None),
             "ομάδες_χαμηλής_παρουσίας": [
                 {"ομάδα": r.get("team"), "παρουσία_%": r.get("attendance_pct")} for r in (low_b[:3] if low_b else [])
@@ -455,6 +467,17 @@ with tab_alerts:
             table(dormant, ["athlete", "last_present"], "dormant")
         else:
             st.success("✓ Όλοι οι αθλητές είναι ενεργοί.")
+
+    st.divider()
+    st.subheader("👨‍👩‍👦 Αθλητές χωρίς συνδεδεμένο γονέα")
+    st.caption("Δεν συνδέονται με γονέα ούτε μέσω household ούτε μέσω parent_users → οι γονείς τους ΔΕΝ βλέπουν δεδομένα στην εφαρμογή/agent.")
+    noparent = safe(lambda: runq("athletes_no_parent", club_id, today_str), "no-parent")
+    if noparent is not None:
+        st.metric("Χωρίς γονέα", len(noparent))
+        if noparent:
+            table(noparent, ["athlete", "team"], "athletes_no_parent")
+        else:
+            st.success("✓ Όλοι οι αθλητές έχουν συνδεδεμένο γονέα.")
 
 # ===========================================================================
 # Tab: Trends
