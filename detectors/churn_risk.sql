@@ -13,17 +13,23 @@
 -- Variables: {{tenant_club_id}}, {{today}}
 -- ============================================================
 
+-- Dedupe per athlete: ένας αθλητής με πολλαπλές ενεργές συνδρομές
+-- εμφανιζόταν N φορές (1 ανά subscription title) — group by user_id και
+-- συγχωνεύουμε τους τίτλους σε ' / '-separated string ώστε να μένει
+-- 1 row/athlete στον τελικό πίνακα κινδύνου.
 WITH active_athletes AS (
-    SELECT DISTINCT su.user_id, u.name, u.last_name, u.email, u.phone,
-           s.title AS subscription_title
-    FROM subscription_users su
-    JOIN subscriptions s ON s.id = su.subscription_id
-    JOIN users u         ON u.id = su.user_id
+    SELECT u.id AS user_id,
+           u.name, u.last_name, u.email, u.phone,
+           GROUP_CONCAT(DISTINCT s.title ORDER BY s.title SEPARATOR ' / ') AS subscription_title
+    FROM users u
+    JOIN subscription_users su ON su.user_id = u.id
+    JOIN subscriptions s       ON s.id = su.subscription_id
     WHERE s.club_id = {{tenant_club_id}}
       AND s.status  = 1
       AND u.deleted_at IS NULL
       AND su.subscription_at <= {{today}}
       AND (su.due_at IS NULL OR su.due_at >= {{today}})
+    GROUP BY u.id, u.name, u.last_name, u.email, u.phone
 ),
 recent_attendance AS (
     SELECT ae.user_id,

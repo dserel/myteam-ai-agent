@@ -83,6 +83,31 @@ def attach_weather(api_key: str, city: str, events: list[dict]) -> list[dict]:
     return out
 
 
+def attach_weather_best(
+    api_key: str, city_candidates: list[str | None], events: list[dict]
+) -> tuple[list[dict], str | None]:
+    """Δοκιμάζει με τη σειρά κάθε candidate· χρησιμοποιεί το πρώτο που γυρνά
+    forecast. Επιστρέφει (events_with_weather, used_city). Αν κανένα δεν δουλέψει,
+    όλα τα events έχουν weather=None και used_city=None."""
+    for city in city_candidates:
+        if not city:
+            continue
+        slots = fetch_forecast(api_key, city)
+        if slots:
+            out = []
+            for e in events:
+                e2 = dict(e)
+                e2["weather"] = weather_for(slots, e.get("start_date"))
+                out.append(e2)
+            return out, city
+    out = []
+    for e in events:
+        e2 = dict(e)
+        e2["weather"] = None
+        out.append(e2)
+    return out, None
+
+
 def _ics_dt(value: Any) -> str | None:
     d = _to_dt(value)
     if not d:

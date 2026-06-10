@@ -41,6 +41,17 @@ def children_subquery(parent_user_id: int) -> str:
     )
 
 
+def club_city(mb: _Runner, club_id: int) -> str | None:
+    """clubs.city του τρέχοντος club — για auto weather lookup ανά σύλλογο."""
+    rows = mb.run_sql(
+        f"SELECT city FROM clubs WHERE id = {int(club_id)} AND deleted_at IS NULL LIMIT 1;"
+    )
+    if not rows:
+        return None
+    city = rows[0].get("city")
+    return str(city).strip() if city else None
+
+
 def child_profiles(mb: _Runner, club_id: int, parent_user_id: int, today: str) -> list[dict]:
     """Κάρτα ταυτότητας ανά παιδί: ομάδα, προπονητής, ηλικία, φανέλα, μέλος από, σύνολο προπονήσεων."""
     c = int(club_id)
