@@ -26,6 +26,7 @@ The data is NOT in Supabase — it lives in myTeam's MySQL, reached only through
 - `schema_pruned.md` — pruned myTeam schema given to the LLM. **Contains the confirmed enums (see below).**
 - `pages/01_Admin.py` — query history, golden examples, schema annotations.
 - `pages/02_Alerts.py` — club-ops dashboard: Briefing (LLM narrative + feature-adoption gaps), Alerts (churn/expiring/overdue/dormant/athletes-without-parent), Trends, Teams & Events, Financials (collection rate, value-at-risk), Extras. Admin-gated. All SQL validated against prod.
+- `src/parent_view.py` — **portable, UI-agnostic data layer** for the parent experience (child profile, upcoming events, attendance, dues, milestones). Centralizes the household-scoped SQL so it can be lifted into the myTeam app later. `pages/03_Parent.py` («Το παιδί μου») is a thin renderer over it.
 - `detectors/*.sql` + `detectors/runner.py` — churn_risk, expiring_subscriptions, mom_revenue.
 
 ## CRITICAL data-model facts (confirmed against production, club 41 = AO Glyfada basketball)
@@ -52,6 +53,9 @@ The data is NOT in Supabase — it lives in myTeam's MySQL, reached only through
 - Greek UI throughout. Money format EUR 1.234; percentages 12,3%.
 - Keep changes tenant-scoped to a club; club 41 is the default test club.
 - Self-contained files; don't add deps lightly (requirements.txt).
+
+## Design intent
+The parent/coach value features are meant to **eventually plug into the existing myTeam app** (Laravel/MySQL). Keep new data logic in reusable modules like `src/parent_view.py` (pure SQL/functions), with Streamlit pages as thin renderers, so the SQL can be ported or wrapped as an API.
 
 ## Possible next steps (not yet done)
 - Fix churn detector to count distinct athletes (dedupe multi-subscription rows).
