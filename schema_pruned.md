@@ -1,6 +1,6 @@
 # myTeam — Pruned Schema για LLM context
 
-Αυτό το αρχείο **δίνεται αυτούσιο στο system prompt του Gemini** όταν παράγει SQL.
+Αυτό το αρχείο **δίνεται αυτούσιο στο system prompt του Claude** όταν παράγει SQL.
 Κρατάμε **μόνο** τους πίνακες που χρειάζονται για: athletes/teams, events/attendance, financials, communications.
 
 > **ΚΑΝΟΝΑΣ ΓΙΑ ΤΟ LLM**: κάθε query σου ΠΡΕΠΕΙ να φιλτράρει σε `club_id = :tenant_club_id`

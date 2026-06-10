@@ -57,7 +57,8 @@ def _secret(key: str, default: str = "") -> str:
 # Όλη η config έρχεται από secrets — ΔΕΝ τα ζητάμε στο sidebar πια.
 # Ο χρήστης βλέπει μόνο: role, club_id (αν χρειάζεται override).
 
-GEMINI_API_KEY = _secret("GEMINI_API_KEY")
+ANTHROPIC_API_KEY = _secret("ANTHROPIC_API_KEY")
+CLAUDE_MODEL = _secret("CLAUDE_MODEL", "claude-sonnet-4-6")
 METABASE_URL = _secret("METABASE_URL", "https://metabase.myteam.gr")
 METABASE_API_KEY = _secret("METABASE_API_KEY")
 METABASE_SESSION = _secret("METABASE_SESSION")
@@ -68,8 +69,8 @@ DEFAULT_CLUB_ID = int(_secret("DEFAULT_CLUB_ID", "41"))
 
 # Sanity check on required secrets
 required_missing = []
-if not GEMINI_API_KEY:
-    required_missing.append("GEMINI_API_KEY")
+if not ANTHROPIC_API_KEY:
+    required_missing.append("ANTHROPIC_API_KEY")
 if not (METABASE_API_KEY or METABASE_SESSION):
     required_missing.append("METABASE_API_KEY or METABASE_SESSION")
 if not METABASE_URL:
@@ -111,9 +112,9 @@ with st.sidebar:
     if user.role == "admin":
         st.subheader("🧪 Tests")
         col1, col2 = st.columns(2)
-        if col1.button("Test Gemini", use_container_width=True):
+        if col1.button("Test Claude", use_container_width=True):
             with st.spinner("..."):
-                ok, msg = LLMClient(api_key=GEMINI_API_KEY).test_connection()
+                ok, msg = LLMClient(api_key=ANTHROPIC_API_KEY, model=CLAUDE_MODEL).test_connection()
             (st.success if ok else st.error)(msg)
         if col2.button("Test Metabase", use_container_width=True):
             with st.spinner("..."):
@@ -158,9 +159,9 @@ if user_role == "parent" and tenant_user_id is None:
 
 @st.cache_resource(show_spinner=False)
 def _get_clients(
-    gk: str, mb_url: str, mb_api: str, mb_sess: str, mb_db: int, sb_url: str, sb_key: str
+    gk: str, model: str, mb_url: str, mb_api: str, mb_sess: str, mb_db: int, sb_url: str, sb_key: str
 ):
-    llm = LLMClient(api_key=gk)
+    llm = LLMClient(api_key=gk, model=model)
     mb = MetabaseClient(url=mb_url, api_key=mb_api, session_token=mb_sess, database_id=mb_db)
     storage = None
     if sb_url and sb_key:
@@ -172,7 +173,8 @@ def _get_clients(
 
 
 llm_client, mb_client, storage_client = _get_clients(
-    GEMINI_API_KEY,
+    ANTHROPIC_API_KEY,
+    CLAUDE_MODEL,
     METABASE_URL,
     METABASE_API_KEY,
     METABASE_SESSION,

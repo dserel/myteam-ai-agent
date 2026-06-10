@@ -1,14 +1,18 @@
 """
 llm.py
 ------
-Wrappers γύρω από Gemini Flash.
+Wrappers γύρω από Anthropic Claude.
 
 Δύο τρόποι χρήσης:
   1. As class (preferred):
-        client = LLMClient(api_key="...", model="gemini-2.5-flash")
+        client = LLMClient(api_key="sk-ant-...", model="claude-sonnet-4-6")
         out = client.generate_sql(question, context)
-        text = client.write_answer(question, sql, rows)
-  2. Module-level (legacy, χρησιμοποιεί GEMINI_API_KEY env var)
+        ans = client.write_answer(question, sql, rows)   # -> {"text","chart"}
+  2. Module-level (legacy, χρησιμοποιεί ANTHROPIC_API_KEY env var)
+
+Σημείωση: Το Claude δεν έχει `response_mime_type=application/json`.
+Για να εξαναγκάσουμε JSON output κάνουμε **assistant prefill** με `{`
+και ξαναπροσθέτουμε το `{` στην αρχή της απάντησης πριν το parse.
 """
 
 from __future__ import annotations
@@ -20,15 +24,17 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from google import genai
-from google.genai import types
+from anthropic import Anthropic
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 SCHEMA_PATH = BASE_DIR / "schema_pruned.md"
 SQL_PROMPT_PATH = BASE_DIR / "prompts" / "sql_generator.md"
 ANSWER_PROMPT_PATH = BASE_DIR / "prompts" / "answer_writer.md"
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+# Default: Sonnet για καλύτερη ποιότητα από Gemini Flash.
+# Για φθηνότερο/γρηγορότερο: "claude-haiku-4-5-20251001".
+DEFAULT_MODEL = "claude-sonnet-4-6"
+MAX_TOKENS = 4096
 
 
 _JSON_BLOCK = re.compile(r"\{.*\}", re.S)
@@ -69,31 +75,48 @@ class LLMClient:
     answer_temperature: float = 0.3
 
     def __post_init__(self) -> None:
-        self._client = genai.Client(api_key=self.api_key)
+        self._client = Anthropic(api_key=self.api_key)
+
+    # ---------- low-level helper -------------------------------------------
+
+    def _complete_json(self, system: str, user_msg: str, temperature: float) -> dict:
+        """
+        Στέλνει ένα single-turn message και εξαναγκάζει JSON object output
+        μέσω assistant prefill με `{`.
+        """
+        resp = self._client.messages.create(
+            model=self.model,
+            max_tokens=MAX_TOKENS,
+            temperature=temperature,
+            system=system,
+            messages=[
+                {"role": "user", "content": user_msg},
+                {"role": "assistant", "content": "{"},
+            ],
+        )
+        raw = "{" + (resp.content[0].text if resp.content else "")
+        return _extract_json(raw)
+
+    # ---------- health -----------------------------------------------------
 
     def test_connection(self) -> tuple[bool, str]:
         try:
-            resp = self._client.models.generate_content(
+            resp = self._client.messages.create(
                 model=self.model,
-                contents=[types.Content(role="user", parts=[types.Part(text="ping")])],
-                config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=5),
+                max_tokens=5,
+                temperature=0.0,
+                messages=[{"role": "user", "content": "ping"}],
             )
-            return True, f"OK — got: {(resp.text or '')[:50]!r}"
+            txt = resp.content[0].text if resp.content else ""
+            return True, f"OK — Claude ({self.model}) απάντησε: {txt[:50]!r}"
         except Exception as e:
-            return False, f"Gemini error: {e}"
+            return False, f"Claude error: {e}"
+
+    # ---------- SQL generation ---------------------------------------------
 
     def generate_sql(self, question: str, context: dict) -> dict:
         system = _render_sql_prompt(context)
-        resp = self._client.models.generate_content(
-            model=self.model,
-            contents=[types.Content(role="user", parts=[types.Part(text=question)])],
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=self.sql_temperature,
-                response_mime_type="application/json",
-            ),
-        )
-        return _extract_json(resp.text or "{}")
+        return self._complete_json(system, question, self.sql_temperature)
 
     def fix_sql_after_error(
         self,
@@ -129,16 +152,9 @@ class LLMClient:
             f"Επέστρεψε ΜΟΝΟ JSON με νέο διορθωμένο SQL."
             f"{attempts_block}"
         )
-        resp = self._client.models.generate_content(
-            model=self.model,
-            contents=[types.Content(role="user", parts=[types.Part(text=user_msg)])],
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=self.sql_temperature,
-                response_mime_type="application/json",
-            ),
-        )
-        return _extract_json(resp.text or "{}")
+        return self._complete_json(system, user_msg, self.sql_temperature)
+
+    # ---------- answer writing ---------------------------------------------
 
     def write_answer(self, question: str, sql: str, rows: list[dict]) -> dict:
         """
@@ -152,34 +168,36 @@ class LLMClient:
             f"**Rows ({len(rows)} total)**:\n```json\n"
             f"{json.dumps(rows[:50], ensure_ascii=False, default=str)}\n```\n"
         )
-        resp = self._client.models.generate_content(
-            model=self.model,
-            contents=[types.Content(role="user", parts=[types.Part(text=user_msg)])],
-            config=types.GenerateContentConfig(
-                system_instruction=system,
-                temperature=self.answer_temperature,
-                response_mime_type="application/json",
-            ),
-        )
-        raw = (resp.text or "").strip()
         try:
-            out = _extract_json(raw)
+            out = self._complete_json(system, user_msg, self.answer_temperature)
         except Exception:
-            # Fallback: αν δεν επιστρέψει valid JSON, treat όλο σαν text
-            return {"text": raw, "chart": None}
+            # Fallback: αν δεν επιστρέψει valid JSON, ξανατρέχουμε χωρίς prefill
+            # και επιστρέφουμε ό,τι κείμενο πάρουμε σαν text.
+            resp = self._client.messages.create(
+                model=self.model,
+                max_tokens=MAX_TOKENS,
+                temperature=self.answer_temperature,
+                system=system,
+                messages=[{"role": "user", "content": user_msg}],
+            )
+            raw = (resp.content[0].text if resp.content else "").strip()
+            try:
+                out = _extract_json(raw)
+            except Exception:
+                return {"text": raw, "chart": None}
         # Defensive: σιγουρέψου ότι έχει τα δύο keys
-        return {"text": out.get("text", "").strip(), "chart": out.get("chart")}
+        return {"text": (out.get("text") or "").strip(), "chart": out.get("chart")}
 
 
 # ---------- Legacy module-level (env-driven) -------------------------------
 
 def _from_env() -> LLMClient:
-    return LLMClient(api_key=os.environ["GEMINI_API_KEY"])
+    return LLMClient(api_key=os.environ["ANTHROPIC_API_KEY"])
 
 
 def generate_sql(question: str, context: dict) -> dict:
     return _from_env().generate_sql(question, context)
 
 
-def write_answer(question: str, sql: str, rows: list[dict]) -> str:
+def write_answer(question: str, sql: str, rows: list[dict]) -> dict:
     return _from_env().write_answer(question, sql, rows)
