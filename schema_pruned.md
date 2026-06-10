@@ -198,31 +198,43 @@ Push notifications (Laravel default schema).
 ## 📊 ENUMS / lookup values
 
 ```
-users.role (tinyint):
-  ⚠ Επιβεβαίωσε με: SELECT role, COUNT(*) FROM users GROUP BY role
-  Πιθανές τιμές (εικασία): 1=manager, 2=coach, 3=parent, 4=athlete, 5=admin
+users.role (tinyint) — ✅ ΕΠΙΒΕΒΑΙΩΜΕΝΟ από production:
+  1 = admin / myTeam staff (πολύ λίγοι)
+  2 = manager (διαχειριστής συλλόγου)
+  3 = coach (προπονητής)
+  4 = athlete (αθλητής) — η πολυπληθέστερη ομάδα (~96k)
+  5 = parent (γονέας)
+  7, 8 = σπάνιοι/λοιποί ρόλοι — ΜΗΝ τους υποθέτεις, ρώτα αν χρειαστεί
+  ⚠ Πιο αξιόπιστος εντοπισμός: coaches via team_user.first_coach=1,
+    γονείς via parent_users.parent_id, αθλητές via team_user.first_coach=0.
 
-events.type (tinyint):
-  ⚠ Επιβεβαίωσε με: SELECT type, COUNT(*) FROM events GROUP BY type
-  Πιθανές: 1=match, 2=tournament, 3=training, 4=meeting, 5=event
+events.type (tinyint) — ✅ ΕΠΙΒΕΒΑΙΩΜΕΝΟ:
+  1 = προπόνηση (training) — μακράν το συχνότερο
+  2 = αγώνας (match) — ΜΟΝΟ αυτός έχει result / score_home / score_away
+  3, 4 = λοιπά events (meeting / εκδήλωση) — χωρίς αποτέλεσμα
+  (ΔΕΝ υπάρχει type=5)
 
-events.result (tinyint):
-  1=win, 2=loss, 3=draw, NULL=μη αγώνας ή χωρίς αποτέλεσμα
+events.result (tinyint): 1=win, 2=loss, 3=draw, NULL=μη αγώνας. Ισχύει μόνο για type=2.
 
-teams.category (char(2)):
-  'm'=ανδρικό, 'f'=γυναικείο, 'mx'=μεικτό
+teams.category (char) — ✅ ΕΠΙΒΕΒΑΙΩΜΕΝΟ:
+  'c' = (συχνότερο) μεικτό / co-ed / παιδικό, 'm' = ανδρικό, 'f' = γυναικείο
+  (ΟΧΙ 'mx')
 
 teams.status (int): 1=active, άλλα=archived
 users.status (tinyint): 1=active, άλλα=inactive
-subscriptions.status (tinyint): 1=active
+subscriptions.status (tinyint): 1=active, 2=inactive/archived
 
-appearance_events.check (tinyint(1)):
-  1=παρών, 0=απών, NULL=δεν καταγράφηκε
+appearance_events.check — ⚠ ΠΡΟΣΟΧΗ: ΔΕΝ είναι 0/1!
+  Πραγματικές τιμές στην παραγωγή: 1 (κυρίαρχο), 2, 3, 4, 5, 6, NULL.
+  → Για "παρών / παρουσία" χρησιμοποίησε  `check = 1`.
+  → Για "απουσία" χρησιμοποίησε  `check <> 1 AND check IS NOT NULL`.
+  Η ακριβής σημασία των 2-6 (απών / δικαιολογημένος / καθυστέρηση κ.λπ.) ΔΕΝ είναι
+  επιβεβαιωμένη — ΜΗΝ επινοείς ετικέτες. Η στήλη `status` είναι κενή — μην τη χρησιμοποιείς.
 
-polls.status (enum): '1'=draft, '2'=active, '3'=closed
+polls.status (enum): '1'=draft, '2'=active, '3'=closed (ελάχιστες/καθόλου εγγραφές στην παραγωγή).
 
-payments.payment_method (smallint):
-  ⚠ Επιβεβαίωσε. Πιθανές: 1=cash, 2=card, 3=transfer, 4=online
+payments.payment_method (smallint) — ⚠ ΣΧΕΔΟΝ ΠΑΝΤΑ NULL στην παραγωγή.
+  ΜΗΝ φιλτράρεις ή ομαδοποιείς με βάση αυτό — δεν συμπληρώνεται.
 ```
 
 ---
