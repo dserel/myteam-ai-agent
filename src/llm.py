@@ -73,6 +73,8 @@ def _extract_json(text: str) -> dict:
 def _render_sql_prompt(context: dict) -> str:
     template = SQL_PROMPT_PATH.read_text(encoding="utf-8")
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    golden = (context.get("golden_examples_inline") or "").strip() or "(καμία ακόμη)"
+    annotations = (context.get("schema_annotations_inline") or "").strip() or "(καμία)"
     return (
         template
         .replace("{{tenant_club_id}}", str(context["tenant_club_id"]))
@@ -80,6 +82,8 @@ def _render_sql_prompt(context: dict) -> str:
         .replace("{{user_role}}", context["user_role"])
         .replace("{{today}}", context["today"])
         .replace("{{schema_pruned_md_inline}}", schema)
+        .replace("{{golden_examples_inline}}", golden)
+        .replace("{{schema_annotations_inline}}", annotations)
     )
 
 

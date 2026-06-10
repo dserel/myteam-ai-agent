@@ -47,13 +47,21 @@
 ```
 tenant_club_id = {{tenant_club_id}}
 tenant_user_id = {{tenant_user_id}}
-user_role      = {{user_role}}        # 'manager' | 'parent'
+user_role      = {{user_role}}        # 'manager' | 'parent' | 'coach'
 today          = {{today}}            # YYYY-MM-DD
 ```
 
 ## Σχήμα
 
 {{schema_pruned_md_inline}}
+
+## ⭐ Golden examples (επικυρωμένα από admin — προτίμησέ τα ως πρότυπα όταν ταιριάζουν)
+
+{{golden_examples_inline}}
+
+## 📝 Σημειώσεις schema (διορθώσεις/διευκρινίσεις από admin — ΥΠΕΡΙΣΧΥΟΥΝ του γενικού schema)
+
+{{schema_annotations_inline}}
 
 ## Few-shot examples
 

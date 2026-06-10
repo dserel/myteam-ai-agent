@@ -185,6 +185,45 @@ llm_client, mb_client, storage_client = _get_clients(
 )
 today_str = today_override.strip() or date.today().isoformat()
 
+
+def _build_learning_context(role: str) -> tuple[str, str]:
+    """Φέρνει golden examples (ανά ρόλο) + schema annotations από το Supabase και
+    τα μορφοποιεί για injection στο SQL prompt. Best-effort — ποτέ δεν μπλοκάρει."""
+    golden_str, ann_str = "", ""
+    if not storage_client:
+        return golden_str, ann_str
+    try:
+        examples = storage_client.list_golden_examples(user_role=role)[:8]
+        lines = []
+        for ex in examples:
+            q = (ex.get("question") or "").strip()
+            sqlt = (ex.get("sql_template") or "").strip()
+            expl = (ex.get("explanation") or "").strip()
+            if not q or not sqlt:
+                continue
+            block = f'- Ερώτηση: "{q}"\n  SQL:\n  ```sql\n  {sqlt}\n  ```'
+            if expl:
+                block += f"\n  Σημείωση: {expl}"
+            lines.append(block)
+        golden_str = "\n".join(lines)
+    except Exception:
+        pass
+    try:
+        anns = storage_client.list_schema_annotations()
+        lines = []
+        for an in anns:
+            tbl = an.get("table_name") or ""
+            col = an.get("column_name")
+            target = f"{tbl}.{col}" if col else tbl
+            sev = an.get("severity") or "info"
+            note = (an.get("note") or "").strip()
+            if note:
+                lines.append(f"- [{target}] ({sev}): {note}")
+        ann_str = "\n".join(lines)
+    except Exception:
+        pass
+    return golden_str, ann_str
+
 # ---------------------------------------------------------------------------
 # Chat history rendering
 # ---------------------------------------------------------------------------
@@ -207,7 +246,25 @@ def _render_feedback(msg_idx: int, history_id: str | None) -> None:
     if c1.button(up_label, key=f"up_{msg_idx}"):
         storage_client.set_feedback(history_id, feedback=1)
         st.session_state.messages[msg_idx]["feedback"] = 1
-        st.toast("Σημειώθηκε ως καλή απάντηση. Ευχαριστώ!", icon="✅")
+        # Auto-promote σε golden example (μία φορά ανά μήνυμα)
+        if not msg.get("promoted_golden"):
+            _q = (msg.get("question") or "").strip()
+            _sql = (msg.get("sql") or "").strip()
+            _role = msg.get("user_role") or "any"
+            if _q and _sql:
+                try:
+                    storage_client.add_golden_example(
+                        user_role=_role if _role in ("manager", "parent", "coach") else "any",
+                        question=_q,
+                        sql_template=_sql,
+                        explanation="Auto-promoted από 👍 χρήστη.",
+                        source_history_id=history_id,
+                    )
+                    storage_client.mark_golden(history_id, golden=True)
+                    st.session_state.messages[msg_idx]["promoted_golden"] = True
+                except Exception:
+                    pass
+        st.toast("Σημειώθηκε ως καλή απάντηση & προστέθηκε στα golden. Ευχαριστώ!", icon="✅")
         st.rerun()
     if c2.button(down_label, key=f"down_{msg_idx}"):
         st.session_state.messages[msg_idx]["feedback"] = -1
@@ -313,11 +370,14 @@ if prompt:
     with st.chat_message("assistant"):
         placeholder = st.empty()
 
+        _golden_inline, _ann_inline = _build_learning_context(user_role)
         ctx = {
             "tenant_club_id": int(tenant_club_id),
             "tenant_user_id": tenant_user_id,
             "user_role": user_role,
             "today": today_str,
+            "golden_examples_inline": _golden_inline,
+            "schema_annotations_inline": _ann_inline,
         }
 
         # --- Conversational memory: ξαναγράφουμε follow-up σε αυτόνομη ερώτηση ---
@@ -333,6 +393,8 @@ if prompt:
         msg_payload: dict = {
             "role": "assistant",
             "content": "",
+            "question": effective_prompt,
+            "user_role": user_role,
             "sql": None,
             "rows": None,
             "error": None,
