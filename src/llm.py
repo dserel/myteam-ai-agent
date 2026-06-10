@@ -31,9 +31,9 @@ SCHEMA_PATH = BASE_DIR / "schema_pruned.md"
 SQL_PROMPT_PATH = BASE_DIR / "prompts" / "sql_generator.md"
 ANSWER_PROMPT_PATH = BASE_DIR / "prompts" / "answer_writer.md"
 
-# Default: Sonnet για καλύτερη ποιότητα από Gemini Flash.
-# Για φθηνότερο/γρηγορότερο: "claude-haiku-4-5-20251001".
-DEFAULT_MODEL = "claude-sonnet-4-6"
+# Default: Haiku — υψηλό rate limit, φθηνό/γρήγορο, αρκετό για text-to-SQL.
+# Για καλύτερη ποιότητα (αν το tier το επιτρέπει): "claude-sonnet-4-6".
+DEFAULT_MODEL = "claude-haiku-4-5-20251001"
 MAX_TOKENS = 4096
 
 _JSON_ONLY_SUFFIX = (
@@ -103,6 +103,20 @@ def _partial_text_from_json(acc: str) -> str:
     return "".join(out)
 
 
+def _is_rate_limit(e: Exception) -> bool:
+    if e.__class__.__name__ in ("RateLimitError",):
+        return True
+    msg = str(e)
+    return "rate_limit" in msg or "429" in msg
+
+
+_RATE_LIMIT_MSG = (
+    "Υπέρβαση ορίου ρυθμού του Anthropic API (rate limit). "
+    "Περίμενε ~1 λεπτό και ξαναδοκίμασε. Για μόνιμη λύση: το μοντέλο είναι ήδη Haiku "
+    "(υψηλό όριο) — αν θες Sonnet, αναβάθμισε το usage tier στο console.anthropic.com."
+)
+
+
 def _render_sql_prompt(context: dict) -> str:
     template = SQL_PROMPT_PATH.read_text(encoding="utf-8")
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
@@ -128,7 +142,8 @@ class LLMClient:
     answer_temperature: float = 0.3
 
     def __post_init__(self) -> None:
-        self._client = Anthropic(api_key=self.api_key)
+        # max_retries: ο SDK κάνει auto-retry στο 429 (τηρώντας το retry-after)
+        self._client = Anthropic(api_key=self.api_key, max_retries=3)
 
     # ---------- low-level helper -------------------------------------------
 
@@ -166,7 +181,12 @@ class LLMClient:
 
     def generate_sql(self, question: str, context: dict) -> dict:
         system = _render_sql_prompt(context)
-        return self._complete_json(system, question, self.sql_temperature)
+        try:
+            return self._complete_json(system, question, self.sql_temperature)
+        except Exception as e:
+            if _is_rate_limit(e):
+                return {"error": _RATE_LIMIT_MSG}
+            raise
 
     def fix_sql_after_error(
         self,
@@ -202,7 +222,12 @@ class LLMClient:
             f"Επέστρεψε ΜΟΝΟ JSON με νέο διορθωμένο SQL."
             f"{attempts_block}"
         )
-        return self._complete_json(system, user_msg, self.sql_temperature)
+        try:
+            return self._complete_json(system, user_msg, self.sql_temperature)
+        except Exception as e:
+            if _is_rate_limit(e):
+                return {"error": _RATE_LIMIT_MSG}
+            raise
 
     # ---------- conversational memory -------------------------------------
 
