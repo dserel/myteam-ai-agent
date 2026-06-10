@@ -93,14 +93,14 @@ with st.sidebar:
     st.divider()
     st.subheader("👤 Context")
 
-    user_role = st.selectbox("Role", options=["manager", "parent"], index=0)
+    user_role = st.selectbox("Role", options=["manager", "parent", "coach"], index=0)
     tenant_club_id = st.number_input(
         "Club ID", min_value=1, value=DEFAULT_CLUB_ID, step=1
     )
     tenant_user_id_str = st.text_input(
-        "User ID (απαιτείται για parent)",
+        "User ID (απαιτείται για parent/coach)",
         value="",
-        help="users.id του γονιού",
+        help="users.id του γονιού (parent) ή του προπονητή (coach)",
     )
     tenant_user_id = int(tenant_user_id_str) if tenant_user_id_str.strip() else None
 
@@ -149,8 +149,9 @@ with st.sidebar:
 # Parent role guard
 # ---------------------------------------------------------------------------
 
-if user_role == "parent" and tenant_user_id is None:
-    st.warning("Για role=parent δώσε το User ID του γονιού στο sidebar.")
+if user_role in ("parent", "coach") and tenant_user_id is None:
+    _who = "του γονιού" if user_role == "parent" else "του προπονητή"
+    st.warning(f"Για role={user_role} δώσε το User ID {_who} στο sidebar.")
     st.stop()
 
 # ---------------------------------------------------------------------------
@@ -260,7 +261,49 @@ for idx, msg in enumerate(st.session_state.messages):
 # Chat input
 # ---------------------------------------------------------------------------
 
+STARTER_QUESTIONS = {
+    "manager": [
+        "Πόσους ενεργούς αθλητές έχουμε συνολικά;",
+        "Πόσοι νέοι αθλητές γράφτηκαν φέτος σε σχέση με πέρσι;",
+        "Πόσοι αθλητές ανά ομάδα;",
+        "Ποια ήταν τα έσοδα ανά μήνα το τελευταίο εξάμηνο;",
+        "Ποιοι αθλητές έχουν ανεξόφλητη συνδρομή;",
+        "Ποιες ομάδες έχουν τη χαμηλότερη παρουσία στις προπονήσεις;",
+    ],
+    "parent": [
+        "Τι προπονήσεις και αγώνες έχει το παιδί μου αυτή την εβδομάδα;",
+        "Πόσο καλή είναι η παρουσία του παιδιού μου τον τελευταίο μήνα;",
+        "Έχω ανεξόφλητη συνδρομή; Πόσα οφείλω;",
+        "Πότε λήγει η συνδρομή μας;",
+        "Σε ποια ομάδα είναι το παιδί μου και ποιος είναι ο προπονητής;",
+        "Ποιο είναι το επόμενο ματς και πού γίνεται;",
+    ],
+    "coach": [
+        "Ποιο είναι το πρόγραμμα της ομάδας μου αυτή την εβδομάδα;",
+        "Πόσοι αθλητές είναι στην ομάδα μου;",
+        "Ποιοι αθλητές έχουν χαμηλή παρουσία;",
+        "Ποιοι απουσίασαν στην τελευταία προπόνηση;",
+        "Ποια ήταν τα αποτελέσματα των τελευταίων μας αγώνων;",
+        "Στατιστικά παρουσιών ανά αθλητή για τη σεζόν;",
+    ],
+}
+
 prompt = st.chat_input("Ρώτα κάτι... π.χ. «πόσοι νέοι αθλητές μπήκαν φέτος;»")
+
+# Starter-button click (ορίστηκε σε προηγούμενο rerun) — το καταναλώνουμε σαν κανονική ερώτηση
+if st.session_state.get("_pending_prompt"):
+    prompt = st.session_state.pop("_pending_prompt")
+
+# Προτεινόμενες ερωτήσεις στην αρχική οθόνη (μόνο όταν το chat είναι άδειο)
+if not st.session_state.messages and not prompt:
+    _starters = STARTER_QUESTIONS.get(user_role, [])
+    if _starters:
+        st.markdown("##### 💡 Δοκίμασε μια ερώτηση:")
+        _cols = st.columns(2)
+        for _i, _q in enumerate(_starters):
+            if _cols[_i % 2].button(_q, key=f"starter_{user_role}_{_i}", use_container_width=True):
+                st.session_state["_pending_prompt"] = _q
+                st.rerun()
 
 if prompt:
     st.session_state.messages.append({"role": "user", "content": prompt})
