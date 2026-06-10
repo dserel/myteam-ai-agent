@@ -102,16 +102,21 @@ if c3.button("🔄 Ανανέωση"):
 
 
 @st.cache_data(ttl=300, show_spinner=False)
-def load(club: int, pid: int, today: str, ow_key: str, city: str) -> dict:
+def load(club: int, pid: int, today: str, ow_key: str, fallback_city: str) -> dict:
     events = pv.upcoming_events(mb, club, pid, today, 7)
+    primary_city = pv.club_city(mb, club)
+    used_city: str | None = None
     if ow_key:
-        events = enrich.attach_weather(ow_key, city, events)
+        events, used_city = enrich.attach_weather_best(
+            ow_key, [primary_city, fallback_city], events
+        )
     return {
         "profiles": pv.child_profiles(mb, club, pid, today),
         "attendance": pv.attendance(mb, club, pid, today, 30),
         "dues": pv.dues(mb, club, pid),
         "events": events,
         "changes": pv.schedule_changes(mb, club, pid, today, 14),
+        "weather_city": used_city,
     }
 
 
@@ -185,6 +190,9 @@ for prof in profiles:
 # Πρόγραμμα εβδομάδας με καιρό + smart heads-up
 st.divider()
 st.subheader("🗓️ Πρόγραμμα αυτής της εβδομάδας")
+wcity = data.get("weather_city")
+if wcity:
+    st.caption(f"🌤️ Καιρός: {wcity}")
 ev = data["events"] or []
 if not ev:
     st.info("Δεν υπάρχουν προγραμματισμένα events αυτή την εβδομάδα.")

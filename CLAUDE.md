@@ -20,8 +20,8 @@ The data is NOT in Supabase — it lives in myTeam's MySQL, reached only through
 - `src/llm.py` — Claude wrapper. Methods: `generate_sql`, `fix_sql_after_error`, `rewrite_followup` (conversational memory), `write_answer`/`stream_answer`, `write_briefing`, `draft_parent_message`, `event_tips` (per-event parent heads-up). **Prompt caching** (cache_control ephemeral) on the static SQL prefix + answer-writer + briefing/draft/tips system prompts. Default model = Haiku. 429s return a clean Greek message; client has max_retries=3.
 - `src/metabase.py` — Metabase `/api/dataset` wrapper. `run_sql()` converts ALL errors (timeout/HTTP/JSON) into `MetabaseError` so the app never hard-crashes; timeout 40s.
 - `src/storage.py` — Supabase wrapper (feedback loop).
-- `src/parent_view.py` — **portable, UI-agnostic data layer** for the parent experience: `child_profiles`, `upcoming_events`, `attendance`, `dues`, `milestones`, `schedule_changes`. Centralizes the household-scoped SQL so it can be lifted into the myTeam app (Laravel) or wrapped as an API.
-- `src/enrich.py` — **non-myTeam enrichment** (portable): OpenWeather 5d/3h forecast (`attach_weather`) + `.ics` builder with VALARM reminders (`build_ics`, 120' for busy/central locations else 90').
+- `src/parent_view.py` — **portable, UI-agnostic data layer** for the parent experience: `child_profiles`, `upcoming_events`, `attendance`, `dues`, `milestones`, `schedule_changes`, `club_city`. Centralizes the household-scoped SQL so it can be lifted into the myTeam app (Laravel) or wrapped as an API.
+- `src/enrich.py` — **non-myTeam enrichment** (portable): OpenWeather 5d/3h forecast (`attach_weather` single-city, `attach_weather_best` with city-fallback chain returning `(events, used_city)`) + `.ics` builder with VALARM reminders (`build_ics`, 120' for busy/central locations else 90').
 - `src/validator.py`, `src/charts.py`, `src/auth.py` (bcrypt hardcoded users in secrets).
 - `prompts/sql_generator.md` — SQL system prompt. Split: static prefix (rules+schema+few-shot, **cached**) + dynamic block (context/golden/annotations) built in code by `_render_sql_prompt`.
 - `prompts/answer_writer.md` — answer + chart + followups spec (fully static, cached).
@@ -41,7 +41,8 @@ The data is NOT in Supabase — it lives in myTeam's MySQL, reached only through
 - `subscriptions.status`: 1=active, 2=archived.
 - `events` has `created_at`, `updated_at`, `deleted_at` (soft delete). Cancellations = `deleted_at` set; edits = `updated_at` >> `created_at`.
 - **Family/parent linkage**: primarily via shared `users.household_id` (parent role=5 + athlete role=4 in same household). `parent_users` is OFTEN EMPTY. Parent isolation scopes children via `household_id UNION parent_users`. Example: parent "Dimitris Sereleas" id 143441 -> child "Aris Sereleas" 143442 via household 54454 (no parent_users row). Reserved word: alias `change` as `change_type`.
-- **Known issue**: the churn detector double-counts athletes with multiple subscription rows (232 rows vs 41 distinct). Briefing/money use distinct counts; raw churn list still over-counts — candidate fix.
+- **Churn detector**: groups by `user_id` in `detectors/churn_risk.sql` → 1 row per at-risk athlete. Multiple active subscriptions get joined into `subscription_title` as `' / '`-separated (e.g. `"Basic / Extra"`). Previously over-counted (232 vs 41 distinct).
+- **Auto weather city**: `pages/03_Parent.py` resolves the OpenWeather city via `pv.club_city(mb, club_id)` (reads `clubs.city`), then falls back to the `WEATHER_CITY` secret via `enrich.attach_weather_best(...)`. The actually-used city is exposed in the page caption.
 
 ## Supabase golden_examples (injected into the SQL prompt per role; auto-added on 👍)
 Seeded & validated: 4 parent (events-this-week, team/coach, attendance, dues), 3 coach (team schedule, low attendance, roster), 1 manager. All use the confirmed household pattern / enums. Adding more here is the main lever to keep Haiku SQL correct.
@@ -66,9 +67,7 @@ Parent/coach value features are meant to **eventually plug into the existing myT
 - Self-contained files; don't add deps lightly (requirements.txt).
 
 ## Possible next steps (not yet done)
-- Auto weather-city per club (from `clubs.city`) instead of the fixed `WEATHER_CITY`.
 - Maps/traffic integration (real leave-by) — needs a Maps API key.
-- Fix churn detector to count distinct athletes (dedupe multi-subscription rows).
 - One-click "invite/link parent" flow for athletes without a linked parent (~16 in club 41).
 - Daily push (email/Slack) of the briefing in addition to the live page / artifact.
 - Semantic retrieval (embeddings) for golden examples instead of recent-N.
