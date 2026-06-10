@@ -117,21 +117,35 @@ _RATE_LIMIT_MSG = (
 )
 
 
-def _render_sql_prompt(context: dict) -> str:
+def _cached(text: str) -> dict:
+    """System block με ephemeral prompt caching (μένει σταθερό -> cache hit)."""
+    return {"type": "text", "text": text, "cache_control": {"type": "ephemeral"}}
+
+
+def _render_sql_prompt(context: dict) -> tuple[str, str]:
+    """
+    Returns (static_prompt, dynamic_block).
+      static  = κανόνες + schema + few-shot — ΣΤΑΘΕΡΟ σε κάθε κλήση => cacheable.
+      dynamic = τρέχον context + golden examples + schema annotations — αλλάζει.
+    Το split επιτρέπει prompt caching του (μεγάλου) static κομματιού.
+    """
     template = SQL_PROMPT_PATH.read_text(encoding="utf-8")
     schema = SCHEMA_PATH.read_text(encoding="utf-8")
+    static = template.replace("{{schema_pruned_md_inline}}", schema)
     golden = (context.get("golden_examples_inline") or "").strip() or "(καμία ακόμη)"
     annotations = (context.get("schema_annotations_inline") or "").strip() or "(καμία)"
-    return (
-        template
-        .replace("{{tenant_club_id}}", str(context["tenant_club_id"]))
-        .replace("{{tenant_user_id}}", str(context.get("tenant_user_id") or "null"))
-        .replace("{{user_role}}", context["user_role"])
-        .replace("{{today}}", context["today"])
-        .replace("{{schema_pruned_md_inline}}", schema)
-        .replace("{{golden_examples_inline}}", golden)
-        .replace("{{schema_annotations_inline}}", annotations)
+    dynamic = (
+        "## Τρέχον context\n"
+        f"tenant_club_id = {context['tenant_club_id']}\n"
+        f"tenant_user_id = {context.get('tenant_user_id') or 'null'}\n"
+        f"user_role      = {context['user_role']}\n"
+        f"today          = {context['today']}\n\n"
+        "## ⭐ Golden examples (επικυρωμένα από admin — προτίμησέ τα ως πρότυπα όταν ταιριάζουν)\n"
+        f"{golden}\n\n"
+        "## 📝 Σημειώσεις schema (διορθώσεις/διευκρινίσεις — ΥΠΕΡΙΣΧΥΟΥΝ του schema)\n"
+        f"{annotations}\n"
     )
+    return static, dynamic
 
 
 @dataclass
@@ -147,16 +161,16 @@ class LLMClient:
 
     # ---------- low-level helper -------------------------------------------
 
-    def _complete_json(self, system: str, user_msg: str, temperature: float) -> dict:
+    def _complete_json(self, system_blocks: list, user_msg: str, temperature: float) -> dict:
         """
-        Στέλνει ένα single-turn message και ζητάει JSON object output
-        μέσω instruction. Robust parse με `_extract_json`.
+        Στέλνει ένα single-turn message και ζητάει JSON object output μέσω instruction.
+        `system_blocks` = λίστα content blocks (το μεγάλο static μπλοκ έχει cache_control).
         """
         resp = self._client.messages.create(
             model=self.model,
             max_tokens=MAX_TOKENS,
             temperature=temperature,
-            system=system + _JSON_ONLY_SUFFIX,
+            system=system_blocks + [{"type": "text", "text": _JSON_ONLY_SUFFIX}],
             messages=[{"role": "user", "content": user_msg}],
         )
         raw = resp.content[0].text if resp.content else ""
@@ -180,9 +194,10 @@ class LLMClient:
     # ---------- SQL generation ---------------------------------------------
 
     def generate_sql(self, question: str, context: dict) -> dict:
-        system = _render_sql_prompt(context)
+        static, dynamic = _render_sql_prompt(context)
+        blocks = [_cached(static), {"type": "text", "text": dynamic}]
         try:
-            return self._complete_json(system, question, self.sql_temperature)
+            return self._complete_json(blocks, question, self.sql_temperature)
         except Exception as e:
             if _is_rate_limit(e):
                 return {"error": _RATE_LIMIT_MSG}
@@ -201,7 +216,7 @@ class LLMClient:
         διόρθωση. Χρησιμοποιεί το ίδιο system prompt (sql_generator.md)
         αλλά το user message περιέχει το context της αποτυχίας.
         """
-        system = _render_sql_prompt(context)
+        static, dynamic = _render_sql_prompt(context)
         attempts_block = ""
         if previous_attempts:
             attempts_block = (
@@ -222,8 +237,9 @@ class LLMClient:
             f"Επέστρεψε ΜΟΝΟ JSON με νέο διορθωμένο SQL."
             f"{attempts_block}"
         )
+        blocks = [_cached(static), {"type": "text", "text": dynamic}]
         try:
-            return self._complete_json(system, user_msg, self.sql_temperature)
+            return self._complete_json(blocks, user_msg, self.sql_temperature)
         except Exception as e:
             if _is_rate_limit(e):
                 return {"error": _RATE_LIMIT_MSG}
@@ -273,7 +289,8 @@ class LLMClient:
         Returns dict: {"text": str, "chart": dict|None}
         Όπου chart spec έχει: {type, title, x, y, color, agg, value_format}
         """
-        system = ANSWER_PROMPT_PATH.read_text(encoding="utf-8")
+        system_text = ANSWER_PROMPT_PATH.read_text(encoding="utf-8")
+        blocks = [_cached(system_text)]
         user_msg = (
             f"**Question**: {question}\n\n"
             f"**SQL**:\n```sql\n{sql}\n```\n\n"
@@ -281,15 +298,14 @@ class LLMClient:
             f"{json.dumps(rows[:50], ensure_ascii=False, default=str)}\n```\n"
         )
         try:
-            out = self._complete_json(system, user_msg, self.answer_temperature)
+            out = self._complete_json(blocks, user_msg, self.answer_temperature)
         except Exception:
-            # Fallback: αν δεν επιστρέψει valid JSON, ξανατρέχουμε χωρίς prefill
-            # και επιστρέφουμε ό,τι κείμενο πάρουμε σαν text.
+            # Fallback: ξανατρέχουμε και επιστρέφουμε ό,τι κείμενο πάρουμε σαν text.
             resp = self._client.messages.create(
                 model=self.model,
                 max_tokens=MAX_TOKENS,
                 temperature=self.answer_temperature,
-                system=system,
+                system=[_cached(system_text)],
                 messages=[{"role": "user", "content": user_msg}],
             )
             raw = (resp.content[0].text if resp.content else "").strip()
@@ -312,7 +328,7 @@ class LLMClient:
         {"text", "chart", "followups"}. Σε σφάλμα γεμίζει out["_error"] και σταματά —
         ο caller κάνει fallback στο write_answer.
         """
-        system = ANSWER_PROMPT_PATH.read_text(encoding="utf-8")
+        system_text = ANSWER_PROMPT_PATH.read_text(encoding="utf-8")
         user_msg = (
             f"**Question**: {question}\n\n"
             f"**SQL**:\n```sql\n{sql}\n```\n\n"
@@ -325,7 +341,7 @@ class LLMClient:
                 model=self.model,
                 max_tokens=MAX_TOKENS,
                 temperature=self.answer_temperature,
-                system=system + _JSON_ONLY_SUFFIX,
+                system=[_cached(system_text), {"type": "text", "text": _JSON_ONLY_SUFFIX}],
                 messages=[{"role": "user", "content": user_msg}],
             ) as stream:
                 for delta in stream.text_stream:
