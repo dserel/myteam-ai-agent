@@ -65,12 +65,13 @@ ANTHROPIC_API_KEY = _secret("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = _secret("CLAUDE_MODEL", "claude-haiku-4-5-20251001")
 
 
-@st.cache_resource(show_spinner=False)
-def _llm(key: str, model: str):
+def _build_llm(key: str, model: str):
+    # ΟΧΙ cache_resource: ο client είναι φθηνός, και το caching θα κρατούσε
+    # παλιό instance μετά από code update (stale-method AttributeError).
     return LLMClient(api_key=key, model=model) if key else None
 
 
-llm = _llm(ANTHROPIC_API_KEY, CLAUDE_MODEL)
+llm = _build_llm(ANTHROPIC_API_KEY, CLAUDE_MODEL)
 
 
 # ---------------------------------------------------------------------------
