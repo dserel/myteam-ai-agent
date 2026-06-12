@@ -130,3 +130,24 @@ def build_ics(events: list[dict], calendar_name: str = "myTeam",
         ]
     lines.append("END:VCALENDAR")
     return "\r\n".join(lines)
+
+
+_GR_DOW = ["Δευ", "Τρι", "Τετ", "Πεμ", "Παρ", "Σαβ", "Κυρ"]
+
+
+def format_local(value, tz_name: str = "Europe/Athens", with_day: bool = True) -> str:
+    """
+    Μορφοποιεί ένα (UTC) datetime σε ΤΟΠΙΚΗ ώρα συλλόγου, ελληνικά.
+    Οι ώρες στη βάση είναι αποθηκευμένες σε UTC -> εδώ γίνεται η μετατροπή.
+    """
+    d = _to_dt(value)
+    if not d:
+        return "—"
+    try:
+        from zoneinfo import ZoneInfo
+        d = d.astimezone(ZoneInfo(tz_name))
+    except Exception:
+        pass
+    if with_day:
+        return f"{_GR_DOW[d.weekday()]} {d.strftime('%d/%m %H:%M')}"
+    return d.strftime("%d/%m %H:%M")

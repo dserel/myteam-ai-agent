@@ -61,6 +61,8 @@ Pivot γονιού-παιδιού.
 
 ## 📅 Events & Attendance
 
+> ⏰ **ΟΛΑ τα datetime είναι σε UTC.** Για εμφάνιση ώρας στον χρήστη χρησιμοποίησε `CONVERT_TZ(col,'UTC','Europe/Athens')`.
+
 ### `events`
 Προπονήσεις, αγώνες, εκδηλώσεις.
 - `id`, `title`, `comments`

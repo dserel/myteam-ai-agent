@@ -24,6 +24,7 @@ import streamlit as st
 from src.auth import login_gate, logout_button, require_admin
 from src.metabase import MetabaseClient, MetabaseError
 from src.llm import LLMClient
+from src import enrich
 
 st.set_page_config(page_title="Alerts · myTeam AI Agent", page_icon="🚨", layout="wide")
 
@@ -534,6 +535,7 @@ with tab_teams:
         if up:
             df = pd.DataFrame(up)
             df["Τύπος"] = df["type"].map(EVENT_TYPE).fillna("Άλλο")
+            df["start_date"] = df["start_date"].map(lambda v: enrich.format_local(v, _secret("CLUB_TZ", "Europe/Athens")))
             df = df.rename(columns={"start_date": "Πότε", "title": "Τίτλος", "location_alias": "Τοποθεσία"})
             st.dataframe(df[["Πότε", "Τύπος", "Τίτλος", "Τοποθεσία"]], use_container_width=True, hide_index=True)
             downloads(df, "upcoming_events")
@@ -547,6 +549,7 @@ with tab_teams:
         if res:
             df = pd.DataFrame(res)
             df["Αποτέλεσμα"] = df["result"].map(RESULT_LABEL).fillna("—")
+            df["start_date"] = df["start_date"].map(lambda v: enrich.format_local(v, _secret("CLUB_TZ", "Europe/Athens")))
             df["Σκορ"] = df.apply(lambda r: f"{r.get('score_home','')}-{r.get('score_away','')}", axis=1)
             df = df.rename(columns={"start_date": "Πότε", "title": "Αγώνας"})
             st.dataframe(df[["Πότε", "Αγώνας", "Αποτέλεσμα", "Σκορ"]], use_container_width=True, hide_index=True)

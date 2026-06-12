@@ -80,12 +80,7 @@ def eur(n) -> str:
 
 
 def fmt_dt(s) -> str:
-    if not s:
-        return "—"
-    try:
-        return pd.to_datetime(str(s)).strftime("%a %d/%m %H:%M")
-    except Exception:
-        return str(s)
+    return enrich.format_local(s, _secret("CLUB_TZ", "Europe/Athens"))
 
 
 st.title("👦 Το παιδί μου")
